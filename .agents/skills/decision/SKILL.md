@@ -29,8 +29,7 @@ decision model says what the system *may* do. It is distinct from:
 - **Alignment:** what turns a declared rule into a control —
   [`../self-governance/alignment/repertoire.md`](../self-governance/alignment/repertoire.md).
 
-That single change in mood — from *does* to *may* — is the subject of this skill. A
-structural edge and a decision edge draw identically and mean opposite kinds of thing:
+A structural edge and a decision edge draw identically and mean opposite kinds of thing:
 `A → B` as a structural edge says "A calls B," a fact about what happens; the same
 arrow as a decision edge says "A **may** call B," a rule about what is permitted.
 
@@ -104,8 +103,7 @@ already has one. Keep these skill instructions separate from the outputs they pr
    before answering.
 5. Reuse verified, covered slices; refresh affected alternatives when stale. Expand
    coverage only where the question requires it. Bootstrap missing slices without
-   overwriting unrelated or user-authored material. Treat an unenumerated case as a
-   coverage gap, never as permission.
+   overwriting unrelated or user-authored material.
 
 ## 3. Choose the form, then close the case space
 
@@ -121,9 +119,7 @@ mood, so pick the smallest form that answers the question and do not stop there.
 | Which assignments are admissible | a constraint system |
 
 Whichever form you pick, every alternative carries a verdict and the enumerated case
-space is closed. An open-ended case space is not a decision model. A *constraint system*
-here is a solver-level form, not the constraint rung of
-[`../self-governance/alignment/repertoire.md`](../self-governance/alignment/repertoire.md).
+space is closed. An open-ended case space is not a decision model.
 
 Graph-shaped models get one rule of their own: an absent edge is a prohibition, so the
 node set and the edge set are both part of the declaration. A completeness check can
@@ -264,9 +260,3 @@ represents. Deciding which declared rule deserves a control is an Alignment deci
 A decision model is not a runtime firewall. Its internal checks hold the declaration,
 not the system; whether real calls stay on the declared edges is the correspondence this
 skill hands to Alignment.
-
-## Source notes
-
-- §2.4 of *Model-Based Agentic Software Engineering*; the access-control matrix traces to
-  Butler W. Lampson, "Protection," *ACM SIGOPS Operating Systems Review* 8, no. 1 (1974):
-  18–24, https://doi.org/10.1145/775265.775268.
