@@ -17,6 +17,8 @@ Use this skill when the engineering question is about what exists:
 Structural modeling represents parts and permitted relationships. It is distinct from:
 
 - **Behavioral modeling:** which states and transitions may occur.
+- **Decision modeling:** what is permitted, required, or prohibited —
+  [`../decision/SKILL.md`](../decision/SKILL.md).
 - **Provenance:** what actually happened — [`../provenance/SKILL.md`](../provenance/SKILL.md).
 - **Measurement:** what quantity was observed against which declared bound —
   [`../measurement/SKILL.md`](../measurement/SKILL.md).
