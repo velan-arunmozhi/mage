@@ -1,0 +1,6 @@
+interface:
+  display_name: "MAGE Orchestration"
+  short_description: "Coordinate six MAGE models around engineering questions"
+  default_prompt: "Use $mage-orchestrate to select and coordinate the MAGE model skills needed for this engineering task."
+policy:
+  allow_implicit_invocation: true
