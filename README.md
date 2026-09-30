@@ -1,4 +1,56 @@
 MAGE argues that agent capability alone does not determine engineering progress. As codebases grow, agents must recover increasingly large amounts of architecture, business rules, constraints, and project-specific knowledge from low-level repository artifacts.
+
 A bootstrapped MAGE environment would attempt to externalize some of this knowledge into reusable engineering representations so that agents do not need to reconstruct it repeatedly.
+
 Our initial goal is to test whether this can be done efficiently on an existing codebase and whether the resulting representations improve agent performance.
 
+Codex: 
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+source ~/.bashrc
+```
+
+Start interactive slurm jobs:
+
+```bash
+sinteractive -A scholar -p spark-interactive \
+  --gres=gpu:1 --cpus-per-task=10 --time=0-2:00:00
+```
+
+One-time install/build for llama:
+
+```bash
+module load modtree/spark
+module load conda cuda cmake
+
+git clone https://github.com/ggml-org/llama.cpp.git
+cmake -S llama.cpp -B llama.cpp/build -DGGML_CUDA=ON -DLLAMA_CURL=ON
+cmake --build llama.cpp/build -j 10
+```
+
+Running a model:
+
+```bash
+module load modtree/spark
+module load cuda
+export HF_HOME="$RCAC_SCRATCH/hf-cache"
+cd ~/llama.cpp
+```
+
+Running Qwen3 (known working):
+
+```bash
+build/bin/llama-cli \
+  -hf Qwen/Qwen3-4B-GGUF:Q4_K_M \
+  -ngl 999 -c 8192 -fa on
+```
+
+Notes:
+
+- Store model downloads in `$RCAC_SCRATCH`.
+- `spark-interactive` is capped at ~60 GB RAM. Use `spark-batch` with `salloc` for larger models.
+- Both Q4 and Q6 downloaded but crashed during CUDA model loading, even in a 100 GB exclusive batch allocation.
