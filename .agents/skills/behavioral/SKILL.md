@@ -1,4 +1,17 @@
-# Skill: MAGE Behavioral Model (What May Happen, and in What Order?)
+---
+name: behavioral
+description: >-
+  Apply the MAGE Behavioral Model to what may happen to a component and in what
+  order. Use for execution order, state lifecycles, finite-state machines, crash
+  recovery, race conditions, and whether a state transition is legal or forbidden.
+  Extracts states, permitted and forbidden transitions with code anchors, and
+  checkable safety and liveness invariants, caching each result under
+  `.mage/behavioral/` so later questions reuse it instead of re-reading source.
+---
+
+# Behavioral Model
+
+What may happen, and in what order?
 
 ## When to Use This Skill
 Use this skill whenever a task asks about execution order, state lifecycles, crash recovery, race conditions, or whether a state transition is legal.

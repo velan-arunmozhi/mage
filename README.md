@@ -14,6 +14,20 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
+OpenCode:
+
+Get OpenCode installed on the Spark nodes:
+
+```bash
+npm install -g opencode-ai
+```
+
+If the skills in Opencode do not match what currently in the .agents/skills directory, run:
+
+```bash
+opencode debug skill
+```
+
 Start interactive slurm jobs:
 
 ```bash
