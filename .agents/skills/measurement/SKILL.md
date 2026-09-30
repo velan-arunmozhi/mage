@@ -1,24 +1,31 @@
-# Measurement Model
+---
+name: measurement
+description: >-
+  Apply the MAGE Measurement Model to define reproducible quantities from agent
+  run telemetry and compare them with declared baselines, budgets, or bounds.
+  Use when designing experiment measures, analyzing baseline and MAGE runs,
+  validating measurement records, or reporting correctness, durable throughput,
+  reconstruction cost, defect escape, human attention, and resource use.
+  Measurement produces evidence; enforcement decisions belong to a separate policy.
+---
 
-This document defines the measurement model for the initial MAGE experiment.
-It turns run telemetry into quantities that can be compared across the baseline and MAGE treatment.
-It does not define the response to a result; warning, adapting, degrading, or gating remain separate enforcement decisions.
+# Measurement
 
-The design follows Chapter 2, Section 2.6 of [*Model-Based Agentic Software Engineering*](agent-guidance-docs/mage-book-2.pdf) and the experiment described in [MAGE Project Guidance](agent-guidance-docs/PROJECT_GUIDANCE.md).
+Use this skill to answer:
 
-## Model card
+> How much correct, durable work does an agent produce, at what reconstruction
+> and human-attention cost, and how does it compare with a baseline or declared bound?
 
-| Field | Definition |
-| --- | --- |
-| **Engineering question** | How much correct, durable work does an agent produce, at what reconstruction and human-attention cost, and how does that compare with the baseline and declared acceptance bounds? |
-| **Model** | Typed observations from each run are normalized into quantities, aggregated over a declared scope and time window, and compared with separately declared baselines or bounds. |
-| **Property** | Each reported result is attributable to source observations and can be compared with a compatible reference without treating missing data as zero. |
-| **Quality attributes** | Correctness, reproducibility, cost-awareness, experimental validity, and operability. |
+Turn run observations into reproducible quantities. Define each quantity's unit,
+scope, time window, filters, aggregation, and reference before interpreting its value.
+Keep every reported result attributable to its source observations.
 
-## Core relation
+## Core rule
 
-Raw telemetry is not yet a measurement model.
-The model gives an observation engineering meaning by defining its unit, scope, aggregation, and relationship to a reference.
+Raw telemetry becomes a measurement only when its meaning and comparison are defined.
+Declare baselines, budgets, targets, and tolerances separately from observations.
+Preserve missing values as `unknown` and retain the margin behind each conclusion.
+Leave warning, adapting, degrading, and gating to a separate response policy.
 
 ```mermaid
 flowchart LR
@@ -33,13 +40,28 @@ flowchart LR
   E -. interpreted by .-> R[Separate response policy]
 ```
 
-The diagram has one job: show that the reference is declared apart from the observed value.
-The comparison produces evidence and preserves margin; it does not choose a consequence.
+## How to use this skill
+
+1. **State the engineering question and scope.** Identify the task, run, condition,
+   repository revision, and unit of analysis. For the initial MAGE experiment, use
+   [MAGE Project Guidance](../../../agent-guidance-docs/PROJECT_GUIDANCE.md) for
+   the study contract and unresolved controls.
+2. **Choose the measurement chain.** Use the chains below. Prioritize correct and
+   accepted completion, then durable throughput, reconstruction cost, and defect escape.
+3. **Define the quantity before calculating it.** Record its semantics, provenance,
+   missing-data policy, and separately declared reference using the definition below.
+   For rates, state the denominator; for composites, use only approved weights.
+4. **Validate the evidence and comparison.** Check the invariants and validation
+   criteria below. If required evidence is unavailable or the definitions differ,
+   report `unknown` or `not_comparable`.
+5. **Calculate and report the result.** Preserve the observed value, reference,
+   delta, margin, uncertainty where available, and evidence references. Report
+   missingness and comparability limits alongside the conclusion.
 
 ## Measurement chains
 
-The experiment uses distinct chains because each answers a different question.
-Do not collapse them into one score.
+Choose the chain that answers the engineering question. Keep the chains distinct;
+do not collapse them into one score.
 
 | Chain | Source observations | Derived quantity | Reference | Interpretation |
 | --- | --- | --- | --- | --- |
@@ -55,7 +77,7 @@ Correct and accepted completion is the primary outcome.
 Durable throughput, reconstruction cost, and defect escape follow in that order.
 Token or time savings do not establish success when correctness declines.
 
-## Measurement definition
+## Define a measurement
 
 Every measured quantity must declare enough context to reproduce and interpret it.
 Use one record per quantity definition.
@@ -137,9 +159,10 @@ The baseline value and tolerance stay `unknown` until the experiment supplies or
 - `tolerance`: Acceptable variation around the reference.
 - `source_refs`: Decision, configuration, or baseline data that supplied the reference.
 
-## Comparison result
+## Report a comparison
 
-A comparison retains the values needed to inspect the conclusion.
+Use a result record that retains the values needed to inspect the conclusion.
+The values below are illustrative, not experiment evidence.
 
 ```yaml
 measurement_id: reconstruction.files-read
@@ -162,7 +185,7 @@ When no valid comparison exists, use `unknown` or `not_comparable`; do not manuf
 
 ## Invariants
 
-An implementation of this model must preserve these rules:
+Preserve these rules when defining, calculating, validating, or reporting measurements:
 
 1. **Compatible comparisons.** Compare only quantities with compatible definitions, units, scopes, time windows, filters, and aggregation methods.
 2. **Separate references.** Store baselines, budgets, targets, tolerances, and capacity envelopes separately from observations.
@@ -204,9 +227,9 @@ efficiency_per_accepted_task = total_resource_use / accepted_tasks
 Do not use `reconstruction_cost` as a composite until the team approves its weights.
 Until then, report its components separately.
 
-## Validation
+## Validate before reporting
 
-A validator should reject or flag a measurement when:
+Reject or flag a measurement when:
 
 - the quantity or reference has no unit;
 - the observation and reference units are incompatible;
@@ -219,10 +242,11 @@ A validator should reject or flag a measurement when:
 - the repository revision, task, harness, foundation model, tool access, limits, or retry policy differs across a matched comparison;
 - a result contains only a status and discards the observed value or margin.
 
-## Initial experiment boundaries
+## Initial MAGE experiment
 
 The repository revision, task set, agent harness, foundation model, tool access, resource limits, retry policy, and numeric success thresholds remain open decisions in the project guidance.
-This model can define their required fields now, but it must not fill them with inferred values.
+Define their required fields, but do not fill them with inferred values. Check the
+current project guidance for declared decisions before running a comparison.
 
 For the first fixture, select one measure from each of the four primary outcome groups:
 
@@ -233,7 +257,16 @@ For the first fixture, select one measure from each of the four primary outcome 
 
 Add human-attention, efficiency, and bootstrap measures after the event schema can collect them consistently.
 
-## Source notes
+## Deliverable
 
-- Chapter 2, Section 2.6, pages 76-79 defines measurement models as quantities, relations, and separately declared bounds. It also separates measurement from enforcement and treats tolerance and margin as model content.
-- [MAGE Project Guidance](agent-guidance-docs/PROJECT_GUIDANCE.md) supplies the shared metadata envelope, experimental measures, priority order, unresolved controls, and the rule that missing values must remain explicit.
+For a measurement-design task, provide the quantity definitions, required evidence,
+declared references, and unresolved fields. For an analysis task, provide comparison
+records and a concise interpretation with missingness and comparability limits.
+For a validation task, identify invalid records and the fields or evidence needed
+to repair them. Match the deliverable to the user's request; defining a measure
+does not authorize changing an enforcement policy.
+
+## Sources
+
+- [*Model-Based Agentic Software Engineering*](../../../agent-guidance-docs/mage-book-2.pdf), Chapter 2, Section 2.6, pages 76-79: quantities, relations, separately declared bounds, tolerance, margin, and the separation of measurement from enforcement. Consult it when interpreting the model's conceptual basis.
+- [MAGE Project Guidance](../../../agent-guidance-docs/PROJECT_GUIDANCE.md): shared metadata, experimental measures, priority order, unresolved controls, and explicit missing values. Consult it when applying this skill to the initial experiment.
