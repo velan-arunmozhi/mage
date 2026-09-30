@@ -19,6 +19,8 @@ Provenance models realized execution or realized change. It is distinct from:
 - **Structural modeling:** what exists.
 - **Behavioral modeling:** what may happen.
 - **Decision modeling:** what is permitted — [`../decision/SKILL.md`](../decision/SKILL.md).
+- **Ownership:** who holds a valid claim now; a past acquisition is not current ownership —
+  [`../ownership/SKILL.md`](../ownership/SKILL.md).
 - **Logging and tracing:** what raw execution signals were observed.
 - **Replay:** whether a realized change can be reproduced.
 

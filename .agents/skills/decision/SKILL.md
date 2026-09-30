@@ -23,6 +23,8 @@ decision model says what the system *may* do. It is distinct from:
 - **Behavioral modeling:** which states and transitions can occur; a transition being
   possible is not a permission to take it —
   [`../behavioral/SKILL.md`](../behavioral/SKILL.md).
+- **Ownership:** whether an actor holds a valid current claim, beyond role permission —
+  [`../ownership/SKILL.md`](../ownership/SKILL.md).
 - **Provenance:** what actually happened — [`../provenance/SKILL.md`](../provenance/SKILL.md).
 - **Measurement:** what quantity was observed against which declared bound —
   [`../measurement/SKILL.md`](../measurement/SKILL.md).
