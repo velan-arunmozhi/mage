@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# Layout 1 entrypoint for an amd64 Linux host (Debian, including WSL).
+#
+# Scholar only serves the foundation model. This machine runs OpenCode and the
+# benchmark grader inside the official amd64 images, and reaches the model
+# through an SSH local forward.
+#
+#   bash scripts/eval-host \
+#     --model-ssh billin19@scholar-k003 \
+#     --jump billin19@scholar.rcac.purdue.edu \
+#     --remote-repo ~/dev/mage
+#
+# Add --setup-only to stop after the model is reachable from a container.
+# The default grades one SWE-bench Pro task, baseline then skills.
+#
+# The mage clone on Scholar is the model script (~/dev/mage/scripts/scholar-session).
+# Benchmark repositories are not cloned there. Harbor checks them out inside
+# images on this machine. Skills are read from this clone and copied into
+# those images.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SKILLS="${REPO_ROOT}/.agents/skills"
+
+MODEL_SSH=""
+JUMP=""
+REMOTE_REPO="~/dev/mage"
+REMOTE_PORT=8080
+LOCAL_PORT=18080
+DATASET="swebenchpro"
+N_TASKS=1
+CONDITION="both"
+SETUP_ONLY=0
+START_REMOTE=1
+MODEL_URL=""
+
+STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/mage-eval"
+TUNNEL_PIDS=()
+
+usage() {
+  cat <<EOF
+Usage: bash scripts/eval-host --model-ssh USER@GPU_NODE [options]
+
+Required, unless --model-url is set:
+  --model-ssh USER@HOST   GPU node where llama-server is bound to 127.0.0.1
+
+Options:
+  --jump USER@LOGIN       SSH jump host (repeat by comma is not required; one hop).
+                          Example: billin19@scholar.rcac.purdue.edu
+                          Omit this when your SSH config already reaches the GPU node.
+  --remote-repo PATH      Clone on the GPU node (default: ~/dev/mage). Tilde expands there.
+  --remote-port PORT      llama-server port on the GPU node (default: 8080).
+  --local-port PORT       Local forward port (default: 18080).
+  --dataset NAME          Harbor dataset (default: swebenchpro).
+  --n-tasks N             Tasks per condition (default: 1).
+  --condition both|baseline|mage
+                          both runs OpenCode with and without .agents/skills.
+  --setup-only            Start the model and prove a container can call it. Do not grade.
+  --no-remote-start       Do not SSH a 'scholar-session serve'. The server must already be up.
+  --model-url URL         Use an existing OpenAI-compatible URL and skip SSH.
+  --help
+
+Re-running the same dataset, task count, and condition resumes Harbor's job
+directory. One local model means Harbor concurrency stays at 1.
+EOF
+}
+
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model-ssh) MODEL_SSH="${2:-}"; shift 2 ;;
+    --jump) JUMP="${2:-}"; shift 2 ;;
+    --remote-repo) REMOTE_REPO="${2:-}"; shift 2 ;;
+    --remote-port) REMOTE_PORT="${2:-}"; shift 2 ;;
+    --local-port) LOCAL_PORT="${2:-}"; shift 2 ;;
+    --dataset) DATASET="${2:-}"; shift 2 ;;
+    --n-tasks) N_TASKS="${2:-}"; shift 2 ;;
+    --condition) CONDITION="${2:-}"; shift 2 ;;
+    --setup-only) SETUP_ONLY=1; shift ;;
+    --no-remote-start) START_REMOTE=0; shift ;;
+    --model-url) MODEL_URL="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "Unknown argument: $1" ;;
+  esac
+done
+
+case "${CONDITION}" in
+  both|baseline|mage) ;;
+  *) die "--condition must be both, baseline, or mage" ;;
+esac
+
+cleanup() {
+  local pid
+  for pid in "${TUNNEL_PIDS[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill "${pid}" 2>/dev/null || true
+      wait "${pid}" 2>/dev/null || true
+    fi
+  done
+}
+trap cleanup EXIT
+
+require_amd64() {
+  local arch
+  arch="$(uname -m)"
+  [[ "${arch}" == "x86_64" ]] || die "This host is ${arch}. SWE-bench Pro and FeatureBench images are linux/amd64. Run this script on the Debian WSL machine, not on Scholar."
+}
+
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    cat <<EOF >&2
+Docker is not usable on this host. The grader and the agent both run inside the benchmark images, so a container runtime is required. Parallelism is a separate Harbor flag and stays at 1 while a single model server is the bottleneck.
+
+On Debian or WSL, install Docker Engine and open a new shell so this user can run docker:
+  https://docs.docker.com/engine/install/debian/
+Then: sudo usermod -aG docker "\$USER"
+EOF
+    exit 1
+  fi
+}
+
+ensure_harbor() {
+  export PATH="${HOME}/.local/bin:${PATH}"
+  if command -v harbor >/dev/null 2>&1 && harbor run --help >/dev/null 2>&1; then
+    echo "Harbor: $(harbor --version 2>/dev/null || echo present)"
+    return
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "Installing uv"
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="${HOME}/.local/bin:${PATH}"
+  fi
+  command -v uv >/dev/null 2>&1 || die "uv is not on PATH after install."
+  echo "Installing Harbor"
+  uv tool install harbor
+  command -v harbor >/dev/null 2>&1 || die "harbor is not on PATH after uv tool install."
+  harbor run --help >/dev/null 2>&1 || die "The harbor command does not look like Harbor Framework. Check 'uv tool install harbor'."
+}
+
+ssh_base() {
+  SSH_ARGS=(-o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4)
+  if [[ -n "${JUMP}" ]]; then
+    SSH_ARGS+=(-J "${JUMP}")
+  fi
+}
+
+start_remote_model() {
+  [[ -n "${MODEL_SSH}" ]] || die "Pass --model-ssh USER@GPU_NODE."
+  ssh_base
+  echo "Starting the model on ${MODEL_SSH} via ${REMOTE_REPO}/scripts/scholar-session serve"
+  echo "The first remote run compiles llama.cpp and downloads weights. Later runs reuse scratch."
+  ssh "${SSH_ARGS[@]}" "${MODEL_SSH}" \
+    "bash -lc 'bash ${REMOTE_REPO}/scripts/scholar-session serve'"
+}
+
+open_tunnel() {
+  local bind="$1"
+  local pid elapsed
+  [[ -n "${MODEL_SSH}" ]] || die "Pass --model-ssh USER@GPU_NODE."
+  ssh_base
+  mkdir -p "${STATE_DIR}"
+  echo "Forwarding ${bind}:${LOCAL_PORT} to ${MODEL_SSH} 127.0.0.1:${REMOTE_PORT}" >&2
+  ssh -N "${SSH_ARGS[@]}" \
+    -L "${bind}:${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" \
+    "${MODEL_SSH}" &
+  pid=$!
+  TUNNEL_PIDS+=("${pid}")
+  if [[ "${bind}" != "127.0.0.1" ]]; then
+    sleep 1
+    kill -0 "${pid}" 2>/dev/null
+    return
+  fi
+  elapsed=0
+  while (( elapsed < 30 )); do
+    if curl -sf "http://127.0.0.1:${LOCAL_PORT}/v1/models" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+model_id_from() {
+  local url="$1"
+  curl -sf "${url}" | python3 -c 'import json,sys; data=json.load(sys.stdin); rows=data.get("data") or []; print(rows[0].get("id","") if rows else "")'
+}
+
+docker_gateway() {
+  docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true
+}
+
+container_reaches() {
+  local url="$1"
+  docker run --rm --add-host=host.docker.internal:host-gateway \
+    curlimages/curl:8.5.0 -sf "${url}/models" >/dev/null 2>&1
+}
+
+prove_container_can_call_model() {
+  local gateway url
+  url="http://host.docker.internal:${LOCAL_PORT}/v1"
+  echo "Checking that a container can reach ${url}" >&2
+  if container_reaches "${url}"; then
+    echo "${url}"
+    return
+  fi
+  gateway="$(docker_gateway)"
+  [[ -n "${gateway}" ]] || die "A container could not reach host.docker.internal:${LOCAL_PORT}, and Docker reported no bridge gateway."
+  echo "host.docker.internal was not enough. Forwarding on the Docker bridge ${gateway} as well." >&2
+  open_tunnel "${gateway}" || die "Could not bind the SSH forward on ${gateway}:${LOCAL_PORT}."
+  url="http://${gateway}:${LOCAL_PORT}/v1"
+  container_reaches "${url}" || die "A container could not reach the model at ${url}."
+  echo "${url}"
+}
+
+run_condition() {
+  local name="$1"
+  local base_url="$2"
+  local model="$3"
+  shift 3
+  local job="mage-${DATASET}-${name}-n${N_TASKS}"
+  echo
+  echo "Harbor job ${job}  agent=opencode  model=${model}  tasks=${N_TASKS}"
+  harbor run \
+    --dataset "${DATASET}" \
+    --agent opencode \
+    --model "${model}" \
+    --n-tasks "${N_TASKS}" \
+    --n-concurrent 1 \
+    --job-name "${job}" \
+    --ae "OPENAI_BASE_URL=${base_url}" \
+    --ae "OPENAI_API_KEY=local" \
+    "$@"
+}
+
+main() {
+  require_amd64
+  require_docker
+  command -v curl >/dev/null 2>&1 || die "curl is required."
+  command -v python3 >/dev/null 2>&1 || die "python3 is required."
+  command -v ssh >/dev/null 2>&1 || die "ssh is required."
+  ensure_harbor
+
+  local models_url base_url model_id
+  if [[ -n "${MODEL_URL}" ]]; then
+    models_url="${MODEL_URL%/}/models"
+    base_url="${MODEL_URL%/}"
+    START_REMOTE=0
+  else
+    if [[ "${START_REMOTE}" -eq 1 ]]; then
+      start_remote_model
+    fi
+    open_tunnel "127.0.0.1" || die "SSH forward exited before the model responded. Is scholar-session serve still running on the GPU node?"
+    models_url="http://127.0.0.1:${LOCAL_PORT}/v1/models"
+    base_url="$(prove_container_can_call_model)"
+  fi
+
+  model_id="$(model_id_from "${models_url}")"
+  [[ -n "${model_id}" ]] || die "The model server returned no model id from ${models_url}"
+  echo "Model id: ${model_id}"
+  echo "Agent base URL: ${base_url}"
+
+  if [[ "${SETUP_ONLY}" -eq 1 ]]; then
+    echo "Setup complete. Re-run without --setup-only to grade."
+    # Keep the tunnel alive until the user stops the script when they asked
+    # only for setup, so they can curl the model themselves.
+    if [[ ${#TUNNEL_PIDS[@]} -gt 0 ]]; then
+      echo "Tunnel stays open until you interrupt this process."
+      wait "${TUNNEL_PIDS[@]}"
+    fi
+    return
+  fi
+
+  local harbor_model="openai/${model_id}"
+  if [[ "${CONDITION}" == "baseline" || "${CONDITION}" == "both" ]]; then
+    run_condition baseline "${base_url}" "${harbor_model}"
+  fi
+  if [[ "${CONDITION}" == "mage" || "${CONDITION}" == "both" ]]; then
+    [[ -d "${SKILLS}" ]] || die "Missing skills directory: ${SKILLS}"
+    run_condition mage "${base_url}" "${harbor_model}" --skill "${SKILLS}"
+  fi
+}
+
+main

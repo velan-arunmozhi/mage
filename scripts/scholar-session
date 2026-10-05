@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# One entrypoint for a Purdue Scholar Spark session.
+#
+#   bash scripts/scholar-session
+#
+# Brings up llama-server for the known-good Qwen3-4B weights on $RCAC_SCRATCH,
+# then stops before benchmark grading. scholar-k003 is aarch64, Apptainer is
+# installed, and /proc/sys/fs/binfmt_misc/qemu-x86_64 is absent, so linux/amd64
+# images (SWE-bench Pro, FeatureBench) cannot run here.
+#
+# Subcommands: session (default), serve, status, stop, help
+#
+# Override any MAGE_* or MODEL_* variable in the environment before running.
+
+set -euo pipefail
+
+PORT="${MAGE_PORT:-8080}"
+MODEL_HF="${MAGE_MODEL_HF:-Qwen/Qwen3-4B-GGUF:Q4_K_M}"
+CONTEXT="${MAGE_CONTEXT:-8192}"
+HOST_BIND="${MAGE_BIND:-127.0.0.1}"
+WAIT_SECS="${MAGE_SERVER_WAIT_SECS:-2700}"
+
+if [[ -z "${RCAC_SCRATCH:-}" ]]; then
+  echo "RCAC_SCRATCH is unset. Run this on a Scholar node, where that variable points at your scratch quota." >&2
+  exit 1
+fi
+
+ROOT="${MAGE_SCRATCH:-${RCAC_SCRATCH}/mage-bench}"
+export HF_HOME="${HF_HOME:-${ROOT}/hf-cache}"
+LLAMA_SRC="${MAGE_LLAMA_SRC:-${ROOT}/llama.cpp}"
+PIDFILE="${ROOT}/llama-server.pid"
+LOGFILE="${ROOT}/llama-server.log"
+MODELS_URL="http://${HOST_BIND}:${PORT}/v1/models"
+
+usage() {
+  cat <<EOF
+Usage: bash scripts/scholar-session [session|serve|status|stop|help]
+
+  session   Build llama-server if needed, start it, then run the eval gate (default).
+  serve     Build and start the model server, then print how to call it.
+  status    Print whether the server is up and which model id it is serving.
+  stop      Stop the server started by this script.
+
+Paths:
+  scratch root   ${ROOT}
+  weights cache  ${HF_HOME}
+  llama.cpp      ${LLAMA_SRC}
+  log            ${LOGFILE}
+
+The first run compiles llama.cpp and downloads ${MODEL_HF}. Later runs reuse both.
+The server is bound to ${HOST_BIND}:${PORT} and lives only as long as this machine
+session does. Run the same command again after a new allocation.
+EOF
+}
+
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+ensure_dirs() {
+  mkdir -p "${ROOT}" "${HF_HOME}" "${ROOT}/tmp"
+  export TMPDIR="${ROOT}/tmp"
+}
+
+load_modules() {
+  if ! type module >/dev/null 2>&1; then
+    local candidate
+    for candidate in /etc/profile.d/modules.sh /usr/share/lmod/lmod/init/bash /usr/share/Modules/init/bash; do
+      if [[ -f "${candidate}" ]]; then
+        # shellcheck disable=SC1090
+        source "${candidate}"
+        break
+      fi
+    done
+  fi
+  type module >/dev/null 2>&1 || die "The module command is not available. Start a Scholar shell and run this script there."
+  module load modtree/spark
+  module load conda cuda cmake
+  command -v cmake >/dev/null 2>&1 || die "cmake is not on PATH after 'module load cuda cmake'."
+  command -v nvcc >/dev/null 2>&1 || die "nvcc is not on PATH after 'module load cuda'."
+}
+
+require_gpu() {
+  command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is not on PATH."
+  nvidia-smi -L >/dev/null 2>&1 || die "No GPU is visible. From a Scholar login node request one with: sinteractive -A scholar -p spark-interactive --gres=gpu:1 --cpus-per-task=10 --time=0-2:00:00"
+}
+
+server_pid() {
+  if [[ -f "${PIDFILE}" ]]; then
+    local pid
+    pid="$(cat "${PIDFILE}")"
+    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+      echo "${pid}"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+models_json() {
+  curl -sf "${MODELS_URL}"
+}
+
+server_healthy() {
+  models_json >/dev/null 2>&1
+}
+
+model_id() {
+  models_json | python3 -c 'import json,sys; data=json.load(sys.stdin); rows=data.get("data") or []; print(rows[0].get("id","") if rows else "")'
+}
+
+print_client_hint() {
+  local id
+  id="$(model_id || true)"
+  echo "Model server: ${MODELS_URL}"
+  if [[ -n "${id}" ]]; then
+    echo "Model id: ${id}"
+    echo "OpenCode, from a checkout on this machine:"
+    echo "  OPENAI_API_KEY=local OPENAI_BASE_URL=http://${HOST_BIND}:${PORT}/v1 opencode run --model openai/${id} \"Summarize this repository\""
+  fi
+  echo "Log: ${LOGFILE}"
+}
+
+build_llama() {
+  local bin="${LLAMA_SRC}/build/bin/llama-server"
+  if [[ -x "${bin}" ]]; then
+    echo "llama-server already built: ${bin}"
+    return
+  fi
+  load_modules
+  if [[ ! -d "${LLAMA_SRC}/.git" ]]; then
+    echo "Cloning llama.cpp into ${LLAMA_SRC}"
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "${LLAMA_SRC}"
+  fi
+  local jobs="${SLURM_CPUS_PER_TASK:-10}"
+  echo "Building llama-server with ${jobs} jobs"
+  cmake -S "${LLAMA_SRC}" -B "${LLAMA_SRC}/build" -DGGML_CUDA=ON -DLLAMA_CURL=ON
+  cmake --build "${LLAMA_SRC}/build" -j "${jobs}" --target llama-server
+  [[ -x "${bin}" ]] || die "Build finished without ${bin}"
+}
+
+start_server() {
+  local bin="${LLAMA_SRC}/build/bin/llama-server"
+  [[ -x "${bin}" ]] || die "Missing ${bin}"
+  if server_healthy; then
+    echo "Model server is already accepting requests."
+    print_client_hint
+    return
+  fi
+  if server_pid >/dev/null; then
+    echo "llama-server pid $(server_pid) is still starting. Waiting."
+  else
+    load_modules
+    echo "Starting llama-server. Weights download and GPU load are logged to ${LOGFILE}"
+    nohup "${bin}" \
+      -hf "${MODEL_HF}" \
+      -ngl 999 \
+      -c "${CONTEXT}" \
+      -fa on \
+      --host "${HOST_BIND}" \
+      --port "${PORT}" \
+      >>"${LOGFILE}" 2>&1 &
+    echo $! >"${PIDFILE}"
+  fi
+  local elapsed=0
+  while (( elapsed < WAIT_SECS )); do
+    if server_healthy; then
+      echo "Model server is up."
+      print_client_hint
+      return
+    fi
+    if ! server_pid >/dev/null; then
+      echo "llama-server exited. Last log lines:" >&2
+      tail -n 40 "${LOGFILE}" >&2 || true
+      exit 1
+    fi
+    if (( elapsed % 30 == 0 )); then
+      echo "Waiting for ${MODELS_URL} (${elapsed}s)"
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  die "Model server did not become ready within ${WAIT_SECS}s. See ${LOGFILE}"
+}
+
+eval_gate() {
+  local arch qemu
+  arch="$(uname -m)"
+  qemu="/proc/sys/fs/binfmt_misc/qemu-x86_64"
+  echo
+  echo "Eval gate"
+  echo "  host arch: ${arch}"
+  echo "  apptainer: $(command -v apptainer || echo missing)"
+  echo "  docker:    $(command -v docker || echo missing)"
+  if [[ -e "${qemu}" ]]; then
+    echo "  qemu:      ${qemu}"
+    echo "QEMU is present. This script does not launch Harbor from that state yet."
+    echo "Install Harbor on this node and run one SWE-bench Pro trial only after confirming an amd64 image starts under Apptainer."
+    return 0
+  fi
+  echo "  qemu:      absent"
+  cat <<EOF
+
+Benchmark grading does not run on this node.
+SWE-bench Pro and FeatureBench ship linux/amd64 images. This host is ${arch}
+with Apptainer $(apptainer version 2>/dev/null | head -n 1 || echo unknown) and no qemu-x86_64 binfmt entry.
+Docker is not installed. Harbor's released runner cannot execute those images here.
+
+The model server is left running. Grading belongs on an amd64 machine.
+Re-running this script on the next Scholar allocation starts the server again
+from the scratch cache and hits this same gate.
+EOF
+  return 2
+}
+
+cmd_serve() {
+  ensure_dirs
+  require_gpu
+  build_llama
+  start_server
+}
+
+cmd_status() {
+  ensure_dirs
+  if server_healthy; then
+    echo "serving"
+    print_client_hint
+    exit 0
+  fi
+  if server_pid >/dev/null; then
+    echo "starting pid $(server_pid)"
+    echo "Log: ${LOGFILE}"
+    exit 0
+  fi
+  echo "stopped"
+  exit 1
+}
+
+cmd_stop() {
+  local pid
+  if pid="$(server_pid)"; then
+    kill "${pid}"
+    echo "Stopped llama-server pid ${pid}"
+    rm -f "${PIDFILE}"
+    return
+  fi
+  echo "No llama-server pid from this script is running."
+}
+
+cmd_session() {
+  cmd_serve
+  eval_gate
+}
+
+main() {
+  local cmd="${1:-session}"
+  case "${cmd}" in
+    session) cmd_session ;;
+    serve) cmd_serve ;;
+    status) cmd_status ;;
+    stop) cmd_stop ;;
+    help|-h|--help) usage ;;
+    *)
+      usage >&2
+      die "Unknown command: ${cmd}"
+      ;;
+  esac
+}
+
+main "$@"

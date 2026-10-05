@@ -68,3 +68,18 @@ Notes:
 - Store model downloads in `$RCAC_SCRATCH`.
 - `spark-interactive` is capped at ~60 GB RAM. Use `spark-batch` with `salloc` for larger models.
 - Both Q4 and Q6 downloaded but crashed during CUDA model loading, even in a 100 GB exclusive batch allocation.
+
+Two machines:
+
+- On the Spark GPU node, `bash scripts/scholar-session serve` builds `llama-server` under `$RCAC_SCRATCH/mage-bench`, downloads `Qwen/Qwen3-4B-GGUF:Q4_K_M`, and serves it on `127.0.0.1:8080`. The clone on Scholar exists so that command can be run there. Benchmark repositories are not checked out on Scholar.
+- On an amd64 Linux host, `scripts/eval-host` SSHs to that command, forwards the port, and runs OpenCode plus the benchmark grader in Docker. Those images are linux/amd64, which is why the grader is not on the GB10.
+
+```bash
+bash scripts/eval-host \
+  --model-ssh billin19@scholar-k003 \
+  --jump billin19@scholar.rcac.purdue.edu \
+  --remote-repo ~/dev/mage \
+  --setup-only
+```
+
+Drop `--setup-only` after a container on the amd64 host can call the model. The default then grades one SWE-bench Pro task twice: OpenCode alone, then OpenCode with `.agents/skills`.
