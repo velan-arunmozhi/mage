@@ -4,6 +4,10 @@ A bootstrapped MAGE environment would attempt to externalize some of this knowle
 
 Our initial goal is to test whether this can be done efficiently on an existing codebase and whether the resulting representations improve agent performance.
 
+The [structural OCL pilot](examples/ocl-structural/README.md) is a runnable first
+example: extract Python imports, represent them with BESSER, and evaluate an OCL
+boundary rule against conforming and violating code fixtures.
+
 Codex: 
 
 ```bash

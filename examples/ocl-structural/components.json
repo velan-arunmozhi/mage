@@ -1,0 +1,7 @@
+{
+  "components": [
+    {"id": "orders.api", "module": "api", "path": "api.py", "layer": "api"},
+    {"id": "orders.service", "module": "service", "path": "service.py", "layer": "service"},
+    {"id": "orders.database", "module": "database", "path": "database.py", "layer": "database"}
+  ]
+}

@@ -1,0 +1,2 @@
+context Dependency inv NoDirectApiDatabaseImport:
+    self.source.layer = 'api' implies self.target.layer <> 'database'

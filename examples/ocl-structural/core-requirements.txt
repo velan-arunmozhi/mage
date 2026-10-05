@@ -1,0 +1,5 @@
+# Install with --no-deps; see README.md for the upstream metadata conflict.
+# Only the structural metamodel, parser, and interpreter are used in this pilot.
+besser==8.0.2
+bocl==1.0.2
+antlr4-python3-runtime==4.13.1
