@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "model_class": "decision",
+  "question": "Does each supplied case have the independently declared policy verdict?",
+  "repository": "demo: MAGE B-OCL fixtures",
+  "basis": "demo: synthetic authored snapshots",
+  "coverage": {
+    "status": "complete-within-scope",
+    "scope": "fixture reader/writer roles and read/write actions on document.1",
+    "omissions": [
+      "automatic Cartesian-domain enumeration",
+      "required-action fulfillment",
+      "runtime admission"
+    ]
+  },
+  "schema": {
+    "DecisionCase": {
+      "subject": "string",
+      "resource": "string",
+      "role": "string",
+      "action": "string",
+      "verdict": "string"
+    }
+  },
+  "objects": [
+    {
+      "id": "fixture.decision.1",
+      "type": "DecisionCase",
+      "attributes": {
+        "subject": "user.1",
+        "resource": "document.1",
+        "role": "reader",
+        "action": "read",
+        "verdict": "permitted"
+      },
+      "evidence": [
+        "demo: bundled synthetic fixture; no production observation"
+      ]
+    },
+    {
+      "id": "fixture.decision.2",
+      "type": "DecisionCase",
+      "attributes": {
+        "subject": "user.1",
+        "resource": "document.1",
+        "role": "reader",
+        "action": "write",
+        "verdict": "prohibited"
+      },
+      "evidence": [
+        "demo: complete declared two-role/two-action fixture domain"
+      ]
+    },
+    {
+      "id": "fixture.decision.3",
+      "type": "DecisionCase",
+      "attributes": {
+        "subject": "user.1",
+        "resource": "document.1",
+        "role": "writer",
+        "action": "read",
+        "verdict": "prohibited"
+      },
+      "evidence": [
+        "demo: complete declared two-role/two-action fixture domain"
+      ]
+    },
+    {
+      "id": "fixture.decision.4",
+      "type": "DecisionCase",
+      "attributes": {
+        "subject": "user.1",
+        "resource": "document.1",
+        "role": "writer",
+        "action": "write",
+        "verdict": "prohibited"
+      },
+      "evidence": [
+        "demo: complete declared two-role/two-action fixture domain"
+      ]
+    }
+  ]
+}

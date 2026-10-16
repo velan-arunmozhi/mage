@@ -1,0 +1,5 @@
+# Core-only environment; see references/ocl.md for upstream metadata conflict.
+# Install these pinned packages with --no-deps in an isolated virtualenv.
+besser==8.0.2
+bocl==1.0.2
+antlr4-python3-runtime==4.13.1

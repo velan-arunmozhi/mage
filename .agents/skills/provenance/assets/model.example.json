@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "model_class": "provenance",
+  "question": "Does each supplied consequential operation retain the required attribution?",
+  "repository": "demo: MAGE B-OCL fixtures",
+  "basis": "demo: synthetic authored snapshots",
+  "coverage": {
+    "status": "complete-within-scope",
+    "scope": "record presence for consequential fixture operations",
+    "omissions": [
+      "causal truth",
+      "timestamp parsing",
+      "event-order verification",
+      "mutation inventory completeness",
+      "replay"
+    ]
+  },
+  "schema": {
+    "Operation": {
+      "cause": "string",
+      "actor": "string",
+      "operation": "string",
+      "target": "string",
+      "mechanism": "string",
+      "timestamp": "string",
+      "result": "string"
+    }
+  },
+  "objects": [
+    {
+      "id": "fixture.provenance.1",
+      "type": "Operation",
+      "attributes": {
+        "cause": "task.204",
+        "actor": "agent.run.132",
+        "operation": "modify_function",
+        "target": "auth.refresh_token",
+        "mechanism": "patch",
+        "timestamp": "2026-10-16T14:30:00Z",
+        "result": "commit.a81f23"
+      },
+      "evidence": [
+        "demo: bundled synthetic fixture; no production observation"
+      ]
+    }
+  ]
+}

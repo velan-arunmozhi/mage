@@ -1,0 +1,5 @@
+# Tested core only; install in an isolated venv with --no-deps.
+# See reference.md for the upstream ANTLR metadata conflict.
+besser==8.0.2
+bocl==1.0.2
+antlr4-python3-runtime==4.13.1

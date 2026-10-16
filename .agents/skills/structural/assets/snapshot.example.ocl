@@ -1,0 +1,2 @@
+context Dependency inv LayerBoundary:
+  not (self.source_layer = 'api' and self.target_layer = 'database')

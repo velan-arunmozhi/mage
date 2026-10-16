@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "model_class": "ownership",
+  "question": "Did each applied protected mutation present the current unexpired grant?",
+  "repository": "demo: MAGE B-OCL fixtures",
+  "basis": "demo: synthetic authored snapshots",
+  "coverage": {
+    "status": "complete-within-scope",
+    "scope": "protected actions on one exclusive expiring fixture lease",
+    "omissions": [
+      "competing acquisitions",
+      "exclusive-owner counting",
+      "atomicity",
+      "renewal",
+      "reclamation liveness"
+    ]
+  },
+  "schema": {
+    "ClaimAction": {
+      "resource": "string",
+      "actor": "string",
+      "current_holder": "string",
+      "presented_claim": "string",
+      "current_claim": "string",
+      "observed_at": "integer",
+      "expires_at": "integer",
+      "effect_applied": "boolean"
+    }
+  },
+  "objects": [
+    {
+      "id": "fixture.ownership.1",
+      "type": "ClaimAction",
+      "attributes": {
+        "resource": "job.42",
+        "actor": "worker.A",
+        "current_holder": "worker.A",
+        "presented_claim": "grant.8",
+        "current_claim": "grant.8",
+        "observed_at": 100,
+        "expires_at": 200,
+        "effect_applied": true
+      },
+      "evidence": [
+        "demo: bundled synthetic fixture; no production observation"
+      ]
+    }
+  ]
+}

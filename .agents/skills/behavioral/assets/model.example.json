@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "model_class": "behavioral",
+  "question": "Does each supplied step belong to the declared guarded lifecycle?",
+  "repository": "demo: MAGE B-OCL fixtures",
+  "basis": "demo: synthetic authored snapshots",
+  "coverage": {
+    "status": "complete-within-scope",
+    "scope": "steps in a bounded pending/running/done fixture lifecycle",
+    "omissions": [
+      "reachability exploration",
+      "liveness",
+      "trace continuity",
+      "concurrent interleavings"
+    ]
+  },
+  "schema": {
+    "Step": {
+      "component": "string",
+      "from_state": "string",
+      "to_state": "string",
+      "trigger": "string",
+      "guard_satisfied": "boolean"
+    }
+  },
+  "objects": [
+    {
+      "id": "fixture.behavioral.1",
+      "type": "Step",
+      "attributes": {
+        "component": "job.worker",
+        "from_state": "pending",
+        "to_state": "running",
+        "trigger": "start",
+        "guard_satisfied": true
+      },
+      "evidence": [
+        "demo: bundled synthetic fixture; no production observation"
+      ]
+    }
+  ]
+}

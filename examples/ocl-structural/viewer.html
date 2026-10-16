@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAGE · Structural model</title>
+  <style>
+    :root { color-scheme:light; --paper:#f6f7f4; --surface:#fff; --ink:#202a30;
+      --muted:#56636b; --line:#d9dfda; --accent:#375ac8; --select:#f0f3fc;
+      --pass:#246a44; --pass-bg:#edf5ee; --fail:#ae3028; --fail-bg:#fcf0ee; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink);
+      font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button { font:inherit; cursor:pointer; color:inherit; }
+    button:focus-visible, [role="button"]:focus-visible { outline:3px solid var(--accent); outline-offset:4px; }
+    button:hover { border-color:var(--accent); }
+    .mono, code, pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .shell { max-width:1320px; margin:0 auto; padding:32px; }
+    .brand { display:flex; align-items:center; gap:12px; padding-bottom:28px; }
+    .brand strong { letter-spacing:.09em; font-size:15px; }
+    .brand span { color:var(--muted); font-size:13px; border-left:1px solid var(--line); padding-left:12px; }
+    .intro { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; }
+    h1 { font-size:30px; font-weight:650; line-height:1.25; letter-spacing:-.03em; margin:0 0 10px; }
+    h2 { font-size:17px; margin:0; font-weight:600; }
+    p { margin:0; }
+    .muted { color:var(--muted); }
+    .intro p { max-width:680px; }
+    .reload { background:var(--surface); border:1px solid var(--line); border-radius:6px;
+      padding:10px 16px; min-height:44px; white-space:nowrap; }
+    .controls { display:flex; align-items:center; justify-content:space-between; gap:20px; margin:28px 0 20px; }
+    .scenarios { display:flex; gap:4px; background:var(--surface); padding:4px; border:1px solid var(--line); border-radius:8px; }
+    .scenarios button { min-height:44px; padding:9px 18px; border:1px solid transparent; background:transparent; border-radius:5px; }
+    .scenarios button[aria-pressed="true"] { background:var(--ink); color:var(--surface); }
+    .status { display:inline-flex; align-items:center; gap:8px; border-radius:5px; padding:7px 12px; font-size:14px; font-weight:600; }
+    .status.pass { color:var(--pass); background:var(--pass-bg); }
+    .status.fail { color:var(--fail); background:var(--fail-bg); }
+    .status.other { color:var(--muted); background:var(--surface); }
+    .summary { display:flex; gap:32px; padding:0 0 20px; }
+    .summary strong { font-size:20px; font-weight:600; margin-right:7px; }
+    .summary span { color:var(--muted); font-size:14px; }
+    .workbench { display:grid; grid-template-columns:minmax(0,1fr) 340px;
+      border:1px solid var(--line); background:var(--surface); border-radius:10px; overflow:hidden; }
+    .graph-panel { min-width:0; }
+    .panel-heading { padding:22px 24px 0; display:flex; justify-content:space-between; gap:14px; }
+    .panel-heading p { font-size:13px; color:var(--muted); margin-top:5px; }
+    figure { margin:0; }
+    svg { display:block; width:100%; height:auto; }
+    svg text { fill:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .node rect { fill:var(--surface); stroke:var(--line); stroke-width:1.5; }
+    .node.selected rect { fill:var(--select); stroke:var(--accent); stroke-width:2; }
+    .node:hover rect { stroke:var(--accent); }
+    .node, .edge { cursor:pointer; }
+    .node-title { font-size:21px; font-weight:600; }
+    .node-id { font-size:14px; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .node-layer { font-size:14px; fill:var(--muted); }
+    .edge-line { fill:none; stroke:var(--muted); stroke-width:2; }
+    .edge.bad .edge-line { stroke:var(--fail); stroke-dasharray:7 5; }
+    .edge.selected .edge-line { stroke-width:3.5; }
+    .edge-hit { fill:none; stroke:transparent; stroke-width:24; }
+    .edge:hover .edge-line { stroke-width:3.5; }
+    .edge-label { fill:var(--muted); font-size:12px; font-weight:600; letter-spacing:.04em; }
+    .edge.bad .edge-label { fill:var(--fail); }
+    .caption { display:flex; gap:20px; padding:0 24px 22px; font-size:13px; color:var(--muted); flex-wrap:wrap; }
+    .legend-line { display:inline-block; width:22px; border-top:2px solid var(--muted); margin:0 7px 3px 0; }
+    .legend-line.bad { border-top:2px dashed var(--fail); }
+    .explanation { border-top:1px solid var(--line); padding:18px 24px; font-size:15px; }
+    .inspector { border-left:1px solid var(--line); padding:22px 24px; min-width:0; }
+    .eyebrow { font-size:11px; letter-spacing:.11em; font-weight:700; color:var(--muted); margin-bottom:8px; }
+    .selection-title { font-size:17px; font-weight:600; margin-bottom:16px; overflow-wrap:anywhere; }
+    .detail { margin:16px 0; }
+    .detail dt { font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .detail dd { margin:0; font-size:14px; overflow-wrap:anywhere; }
+    .source { background:var(--paper); border:1px solid var(--line); padding:12px; border-radius:5px;
+      font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; margin:12px 0; }
+    .hash { font-size:11px; }
+    .inspector .status { font-size:13px; }
+    .connections { display:grid; gap:8px; margin-top:10px; }
+    .connections button { text-align:left; background:var(--paper); border:1px solid var(--line);
+      padding:10px; border-radius:5px; min-height:44px; font-size:13px; overflow-wrap:anywhere; }
+    .rule { margin-top:24px; display:grid; grid-template-columns:210px minmax(0,1fr); gap:24px; }
+    .rule h2 { margin-bottom:6px; }
+    .rule p { font-size:13px; color:var(--muted); }
+    .rule pre { margin:0; padding:18px 20px; border:1px solid var(--line); background:var(--surface);
+      border-radius:6px; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    footer { border-top:1px solid var(--line); margin-top:26px; padding-top:16px; display:flex; justify-content:space-between; gap:24px;
+      font-size:12px; color:var(--muted); }
+    footer p { max-width:720px; }
+    @media(max-width:1000px) { .workbench { grid-template-columns:minmax(0,1fr) 290px; } .shell { padding:24px; } }
+    @media(max-width:760px) { .workbench { grid-template-columns:1fr; } .inspector { border-left:0; border-top:1px solid var(--line); }
+      .rule { grid-template-columns:1fr; gap:10px; } .intro { display:block; } .reload { margin-top:16px; }
+      .controls { flex-wrap:wrap; gap:12px; } .shell { padding:20px 16px; } h1 { font-size:27px; }
+      .summary { gap:20px; flex-wrap:wrap; } footer { flex-direction:column; gap:10px; } }
+    @media(prefers-color-scheme:dark) { :root { color-scheme:dark; --paper:#171d20; --surface:#20272b; --ink:#e6ece8;
+      --muted:#b2beb8; --line:#3c4644; --accent:#a2b5ff; --select:#303b52;
+      --pass:#a5d9b6; --pass-bg:#253c2d; --fail:#ffb5aa; --fail-bg:#472c2a; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="brand"><strong>MAGE</strong><span>STRUCTURAL MODEL / OCL PILOT</span></div>
+    <header class="intro">
+      <div><h1>See the boundary.</h1><p class="muted">Components come from declarations. Arrows come from Python imports. OCL checks whether each connection follows the rule.</p></div>
+      <button class="reload" id="reload">Reload model</button>
+    </header>
+    <div class="controls">
+      <div class="scenarios" role="group" aria-label="Source fixture">
+        <button data-scenario="valid" aria-pressed="true">Valid fixture</button>
+        <button data-scenario="invalid" aria-pressed="false">Invalid fixture</button>
+      </div>
+      <div id="status" class="status" aria-live="polite"></div>
+    </div>
+    <div class="summary" id="summary"></div>
+    <div class="workbench">
+      <section class="graph-panel" aria-labelledby="graph-heading">
+        <div class="panel-heading"><div><h2 id="graph-heading">Observed structure</h2><p>Select a component or an arrow to inspect it.</p></div></div>
+        <figure>
+          <svg id="graph" role="group" aria-label="Interactive component import graph"></svg>
+          <figcaption class="caption"><span><i class="legend-line"></i>Observed import</span><span id="violation-legend"><i class="legend-line bad"></i>Rule violation</span></figcaption>
+        </figure>
+        <p class="explanation" id="explanation"></p>
+      </section>
+      <aside class="inspector" aria-label="Selected element evidence" aria-live="polite" id="inspector"></aside>
+    </div>
+    <section class="rule" aria-labelledby="rule-heading">
+      <div><h2 id="rule-heading">The architectural rule</h2><p>API components must not directly import database components.</p></div>
+      <pre id="rule-code"></pre>
+    </section>
+    <footer><p>Scope: direct static imports between declared Python modules. Component layers and this rule are authored demo policy. Runtime calls and indirect dependencies are outside this check.</p><p id="timestamp" class="mono"></p></footer>
+  </main>
+  <script type="application/json" id="model-data">__MODEL_DATA__</script>
+  <script>
+    const data = JSON.parse(document.getElementById('model-data').textContent);
+    let scenario = 'valid';
+    let selection = { kind: 'edge', index: 0 };
+    const mobile = matchMedia('(max-width: 600px)');
+    const graph = document.getElementById('graph');
+    const report = () => data.reports[scenario];
+    const el = (tag, text, className) => {
+      const element = document.createElement(tag);
+      if (text !== undefined) element.textContent = text;
+      if (className) element.className = className;
+      return element;
+    };
+    const svgEl = (tag, attrs = {}, text) => {
+      const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
+      if (text !== undefined) element.textContent = text;
+      return element;
+    };
+    const select = (kind, index) => { selection = { kind, index }; drawGraph(); drawInspector(); };
+    const activate = (element, action) => {
+      element.addEventListener('click', action);
+      element.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); action(); }
+      });
+    };
+    function drawGraph() {
+      const r = report(), vertical = mobile.matches;
+      const focusedLabel = graph.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
+      const positions = r.components.map((c, i) => vertical
+        ? { x: 170, y: 130 + i * 250 } : { x: 160 + i * 290, y: 220 });
+      const byId = Object.fromEntries(r.components.map((c, i) => [c.id, positions[i]]));
+      graph.replaceChildren();
+      graph.setAttribute('viewBox', vertical ? '0 0 340 750' : '0 0 900 360');
+      graph.append(svgEl('title', {}, `Observed imports in the ${scenario} fixture`));
+      graph.append(svgEl('desc', {}, r.results.map(e => `${e.from} imports ${e.to}: ${e.satisfied ? 'rule satisfied' : 'rule violated'}`).join('. ')));
+      const defs = svgEl('defs');
+      for (const [id, color] of [['import-arrow', 'var(--muted)'], ['violation-arrow', 'var(--fail)']]) {
+        const marker = svgEl('marker', { id, viewBox:'0 0 10 10', refX:9, refY:5, markerWidth:7, markerHeight:7, orient:'auto-start-reverse' });
+        marker.append(svgEl('path', { d:'M 0 0 L 10 5 L 0 10 z', fill:color })); defs.append(marker);
+      }
+      graph.append(defs);
+      r.results.forEach((edge, i) => {
+        const a = byId[edge.from], b = byId[edge.to];
+        const long = vertical ? Math.abs(b.y - a.y) > 260 : Math.abs(b.x - a.x) > 300;
+        let path, label;
+        if (vertical) {
+          path = long ? `M ${a.x} ${a.y+56} C 335 ${a.y+120},335 ${b.y-120},${b.x} ${b.y-56}`
+                      : `M ${a.x} ${a.y+56} L ${b.x} ${b.y-56}`;
+          label = long ? { x:310, y:(a.y+b.y)/2, transform:`rotate(90 310 ${(a.y+b.y)/2})` }
+                       : { x:185, y:(a.y+b.y)/2 };
+        } else {
+          path = long ? `M ${a.x+105} ${a.y-5} C ${a.x+230} 65,${b.x-230} 65,${b.x-105} ${b.y-5}`
+                      : `M ${a.x+105} ${a.y} L ${b.x-105} ${b.y}`;
+          label = { x:(a.x+b.x)/2, y:long ? 80 : a.y-15, 'text-anchor':'middle' };
+        }
+        const group = svgEl('g', { class:`edge ${edge.satisfied ? '' : 'bad'} ${selection.kind==='edge' && selection.index===i ? 'selected' : ''}`,
+          role:'button', tabindex:0, 'aria-label':`${edge.from} imports ${edge.to}, ${edge.satisfied ? 'rule satisfied' : 'rule violated'}` });
+        group.append(svgEl('path', { d:path, class:'edge-line', 'marker-end':`url(#${edge.satisfied ? 'import-arrow' : 'violation-arrow'})` }),
+          svgEl('path', { d:path, class:'edge-hit' }),
+          svgEl('text', { ...label, class:'edge-label' }, edge.satisfied ? 'IMPORTS' : 'VIOLATION'));
+        activate(group, () => select('edge', i)); graph.append(group);
+      });
+      r.components.forEach((component, i) => {
+        const p = positions[i];
+        const group = svgEl('g', { class:`node ${selection.kind==='node' && selection.index===i ? 'selected' : ''}`,
+          role:'button', tabindex:0, 'aria-label':`Inspect ${component.id}, layer ${component.layer}` });
+        group.append(svgEl('rect', { x:p.x-105, y:p.y-56, width:210, height:112, rx:7 }),
+          svgEl('text', { x:p.x-83, y:p.y-20, class:'node-title' }, component.layer==='api' ? 'API' : component.layer==='service' ? 'Service' : 'Database'),
+          svgEl('text', { x:p.x-83, y:p.y+7, class:'node-id' }, component.id),
+          svgEl('text', { x:p.x-83, y:p.y+33, class:'node-layer' }, `layer: ${component.layer}`));
+        activate(group, () => select('node', i)); graph.append(group);
+      });
+      if (focusedLabel) {
+        const replacement = [...graph.querySelectorAll('[role="button"]')].find(e => e.getAttribute('aria-label')===focusedLabel);
+        if (replacement) replacement.focus({preventScroll:true});
+      }
+    }
+    function drawInspector() {
+      const panel = document.getElementById('inspector'), r = report();
+      panel.replaceChildren(el('p', selection.kind==='edge' ? 'CONNECTION EVIDENCE' : 'COMPONENT DECLARATION', 'eyebrow'));
+      const field = (label, value, mono=false) => {
+        const list = el('dl', undefined, 'detail');
+        list.append(el('dt', label), el('dd', value, mono ? 'mono' : '')); panel.append(list);
+      };
+      if (selection.kind==='edge') {
+        const edge = r.results[selection.index];
+        panel.append(el('h2', `${edge.from} → ${edge.to}`, 'selection-title'),
+          el('p', edge.satisfied ? 'Rule satisfied' : 'Rule violated', `status ${edge.satisfied ? 'pass' : 'fail'}`));
+        field('Relationship', 'IMPORTS · observed in source');
+        field('Source location', `fixtures/${scenario}/${edge.evidence.path}:${edge.evidence.line}`, true);
+        panel.append(el('pre', edge.evidence.symbol, 'source'));
+        field('OCL invariant', edge.rule_id, true);
+        field('Source SHA-256', edge.evidence.sha256, true);
+      } else {
+        const component = r.components[selection.index];
+        panel.append(el('h2', component.id, 'selection-title'));
+        field('Architectural layer', component.layer);
+        field('Declaration', 'Authored in components.json');
+        field('Mapped source', `fixtures/${scenario}/${component.path}`, true);
+        field('Source SHA-256', component.sha256, true);
+        const edges = r.results.map((e,i) => ({e,i})).filter(({e}) => e.from===component.id || e.to===component.id);
+        if (edges.length) {
+          panel.append(el('p', 'Observed connections', 'eyebrow'));
+          const list = el('div', undefined, 'connections');
+          for (const {e,i} of edges) {
+            const button = el('button', `${e.from} → ${e.to}${e.satisfied ? '' : ' · VIOLATION'}`);
+            button.addEventListener('click', () => select('edge', i)); list.append(button);
+          }
+          panel.append(list);
+        }
+      }
+    }
+    function render() {
+      const r = report(), failed = r.violations.length > 0;
+      if (selection.kind==='edge' && !r.results[selection.index]) selection = {kind:'node', index:0};
+      for (const button of document.querySelectorAll('[data-scenario]')) button.setAttribute('aria-pressed', String(button.dataset.scenario===scenario));
+      const status = document.getElementById('status');
+      status.className = `status ${failed ? 'fail' : r.status==='pass-within-scope' ? 'pass' : 'other'}`;
+      status.textContent = failed ? `${r.violations.length} rule violation${r.violations.length===1 ? '' : 's'}` : r.status==='pass-within-scope' ? 'Passes within scope' : 'Incomplete coverage';
+      const summary = document.getElementById('summary'); summary.replaceChildren();
+      for (const [value, label] of [[r.components.length,'components'],[r.results.length,'observed imports'],[r.violations.length,'violations']]) {
+        const item = el('div'); item.append(el('strong', String(value)), el('span', label)); summary.append(item);
+      }
+      document.getElementById('violation-legend').hidden = !failed;
+      document.getElementById('rule-code').textContent = r.rule.expression;
+      document.getElementById('explanation').textContent = failed
+        ? 'The API imports the database directly. Each dashed arrow is an observed dependency that violates the OCL boundary rule.'
+        : r.status==='incomplete' ? 'The observed imports satisfy the rule, but some imports or Python files are outside the declared mapping. The command-line report lists those coverage gaps.'
+        : r.results.length ? 'The observed connections satisfy the OCL boundary rule. Follow an arrow to see the importing source statement.'
+        : 'No direct static imports were found between the declared components. Select a component to inspect its declaration.';
+      document.getElementById('timestamp').textContent = `Checked ${new Date(data.generated_at).toLocaleString()}`;
+      drawGraph(); drawInspector();
+    }
+    for (const button of document.querySelectorAll('[data-scenario]')) button.addEventListener('click', () => {
+      scenario = button.dataset.scenario;
+      const firstViolation = report().results.findIndex(e => !e.satisfied);
+      selection = {kind:'edge', index:firstViolation<0 ? 0 : firstViolation}; render();
+    });
+    document.getElementById('reload').addEventListener('click', () => location.reload());
+    mobile.addEventListener('change', drawGraph);
+    render();
+  </script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "model_class": "measurement",
+  "question": "Are the supplied upper-bound comparison units, delta, and margin consistent?",
+  "repository": "demo: MAGE B-OCL fixtures",
+  "basis": "demo: synthetic authored snapshots",
+  "coverage": {
+    "status": "complete-within-scope",
+    "scope": "upper-bound comparisons with exact fixture arithmetic",
+    "omissions": [
+      "telemetry aggregation",
+      "matched-run comparability",
+      "uncertainty estimation",
+      "response policy"
+    ]
+  },
+  "schema": {
+    "Comparison": {
+      "measurement": "string",
+      "run": "string",
+      "unit": "string",
+      "reference_unit": "string",
+      "observed": "real",
+      "reference": "real",
+      "delta": "real",
+      "margin": "real"
+    }
+  },
+  "objects": [
+    {
+      "id": "fixture.measurement.1",
+      "type": "Comparison",
+      "attributes": {
+        "measurement": "tokens.total",
+        "run": "run.1",
+        "unit": "tokens",
+        "reference_unit": "tokens",
+        "observed": 40.0,
+        "reference": 50.0,
+        "delta": -10.0,
+        "margin": 10.0
+      },
+      "evidence": [
+        "demo: bundled synthetic fixture; no production observation"
+      ]
+    }
+  ]
+}

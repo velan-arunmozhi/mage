@@ -4,9 +4,40 @@ A bootstrapped MAGE environment would attempt to externalize some of this knowle
 
 Our initial goal is to test whether this can be done efficiently on an existing codebase and whether the resulting representations improve agent performance.
 
-The [structural OCL pilot](examples/ocl-structural/README.md) is a runnable first
-example: extract Python imports, represent them with BESSER, and evaluate an OCL
-boundary rule against conforming and violating code fixtures.
+All six model skills have executable B-UML/B-OCL workflows:
+
+- [Structural](.agents/skills/structural/references/bocl.md): dependency boundaries.
+- [Behavioral](.agents/skills/behavioral/references/bocl.md): guarded lifecycle steps.
+- [Ownership](.agents/skills/ownership/references/bocl.md): current grants and stale actions.
+- [Decision](.agents/skills/decision/references/bocl.md): case verdicts against declared policy.
+- [Measurement](.agents/skills/measurement/references/bocl.md): units, deltas, and margins.
+- [Provenance](.agents/skills/provenance/references/bocl.md): consequential attribution.
+
+Each skill includes a typed JSON snapshot, a separate `.ocl` invariant, and a
+runner that builds B-UML objects and evaluates them through B-OCL. Keep the
+[`_shared/bocl` runtime](.agents/skills/_shared/bocl/reference.md) beside the six
+skills when installing the suite. Its contract covers pinned dependencies,
+supported syntax, evidence, and coverage. Markdown remains the explanation and
+evidence projection; project-specific models belong under `.mage/` or the
+project's existing store.
+
+The [structural OCL pilot](examples/ocl-structural/README.md) also extracts Python
+imports directly and checks an association-based boundary rule. That adapter
+continues to serve direct-import questions. The shared adapters check supplied
+snapshots; they do not prove liveness or install runtime enforcement.
+
+With the pilot's core environment installed, run a bundled example:
+
+```bash
+examples/ocl-structural/.venv/bin/python .agents/skills/behavioral/scripts/validate_model.py \
+  .agents/skills/behavioral/assets/model.example.json \
+  --rule .agents/skills/behavioral/assets/snapshot.example.ocl \
+  --authority 'demo: bundled lifecycle fixture'
+```
+
+Exit `0` means pass within supplied coverage, `1` means violations, and `2` means
+incomplete coverage or an error. Unknown values remain unknown. See each skill's
+workflow before substituting actual repository facts or policy.
 
 Codex: 
 
