@@ -49,7 +49,8 @@ flowchart LR
 2. **Choose the measurement chain.** Use the chains below. Prioritize correct and
    accepted completion, then durable throughput, reconstruction cost, and defect escape.
 3. **Define the quantity before calculating it.** Record its semantics, provenance,
-   missing-data policy, and separately declared reference using the definition below.
+   missing-data policy, and separately declared reference using the executable
+   record contract below.
    For rates, state the denominator; for composites, use only approved weights.
 4. **Validate the evidence and comparison.** Check the invariants and validation
    criteria below. If required evidence is unavailable or the definitions differ,
@@ -77,170 +78,98 @@ Correct and accepted completion is the primary outcome.
 Durable throughput, reconstruction cost, and defect escape follow in that order.
 Token or time savings do not establish success when correctness declines.
 
-## Define a measurement
+## Executable measurement model
 
-Every measured quantity must declare enough context to reproduce and interpret it.
-Use one record per quantity definition.
+The implemented mix is **JSON Schema plus deterministic Python checks**:
 
-```yaml
-id: reconstruction.files-read
-model_class: measurement
-question: How many distinct repository files did the agent inspect before its first implementation edit?
-scope:
-  experiment: mage-initial
-  unit_of_analysis: run
-  conditions: [baseline, mage]
-claim_type: observed
-source_authority: generated_model
-source_refs:
-  - run_event_log
-generated_at: 2026-09-23T00:00:00Z
-generator_version: commit-or-version
-confidence: known
-property: files_read can be compared between matched conditions
-quality_attribute: reconstruction_cost
+- [The bundle schema](schemas/bundle.schema.json) defines quantity definitions,
+  observations, separately sourced references, and requested comparisons.
+- [The checker](scripts/measure.py) recomputes observations and comparisons, checks
+  matched-run controls, and preserves unknowns, missingness, uncertainty, and margins.
+- [The record contract](references/record-contract.md) explains supported
+  aggregations, units, status meanings, setup, and limits. Read it when producing
+  machine-readable records or extending a measure.
 
-quantity:
-  name: files_read
-  unit: distinct_files
-  value_type: integer
-  direction: lower_is_better
-  aggregation: count_distinct
-  time_window:
-    start: run_started
-    end: first_implementation_edit
-  filters:
-    include: repository_file_reads
-    exclude: harness_bootstrap_reads
+The JSON definitions are the reusable model, not merely a container for telemetry:
+they declare quantity meaning, scope, filters, windows, denominator, and missing-data
+policy. The schema is authoritative for the v1 record shape; Python implements
+cross-record and arithmetic checks. Do not maintain a second editable definition
+in SysML, UML/OCL, or a Markdown table for this workflow. A later projection into
+another modeling tool needs an explicit mapping and correspondence check.
 
-reference:
-  kind: matched_baseline
-  value: unknown
-  unit: distinct_files
-  tolerance: unknown
+Keep the model card explicit: question, scope and omissions, represented property,
+quality attribute, authority, and evidence. Reuse canonical entity/run IDs from
+other models. A result or event owned elsewhere is linked, not copied as a new authority.
 
-missing_data:
-  representation: unknown
-  policy: exclude_from_calculation_and_report_missingness
+### Use the implementation
+
+Install [requirements.txt](requirements.txt) into a Python 3.9+ environment.
+From the repository root, run the bundled synthetic example:
+
+```bash
+python3 .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json
 ```
 
-The example records a definition, not a result.
-The baseline value and tolerance stay `unknown` until the experiment supplies or declares them.
+For actual work, use the project's experiment store; otherwise save a scoped bundle
+under `.mage/measurement/<scope-id>/bundle.json`. Keep actual evidence and outputs
+outside this skill. The bundled examples have `synthetic: true` and are not benchmark
+results or settled experiment thresholds. Label real bundles `synthetic: false`
+only when the observations actually come from a run.
 
-## Required fields
+The checker writes a JSON report to stdout. Save it to a separate file, then use
+`--verify-report <report.json>` to recompute it against the same bundle, schema,
+and checker. A saved status alone is never evidence.
 
-### Identity and provenance
+Exit codes describe the calculation, not whether a system should be admitted:
 
-- `id`: Stable identifier for the quantity.
-- `model_class`: Always `measurement` for records governed by this model.
-- `question`: The engineering question the quantity helps answer.
-- `scope`: Repository revision, task, run, condition, and unit of analysis.
-- `claim_type`: `observed`, `declared`, or `derived`.
-- `source_authority`: The authoritative source for the value or bound.
-- `source_refs`: Event logs, test reports, review records, configuration, or human decisions used to produce the value.
-- `generated_at` and `generator_version`: Provenance required to reproduce derived values.
-- `confidence`: `known`, `inferred`, or `uncertain`.
+- `0`: calculations and comparisons completed, including reported bound violations.
+- `1`: evidence is incomplete, controls are unknown, comparisons are incompatible,
+  inputs are missing, or no comparison was requested.
+- `2`: malformed records, broken references, inconsistent arithmetic, or a changed
+  saved report.
 
-### Quantity semantics
+Keep outside-bound results visible. Do not install a production gate or change a
+response policy as a side effect of measuring.
 
-- `name`: Canonical quantity name.
-- `unit`: Unit shared by the observation, derived value, and reference.
-- `value_type`: Numeric representation and permitted range.
-- `direction`: `higher_is_better`, `lower_is_better`, `target`, or `descriptive`.
-- `aggregation`: Exact function used to combine observations.
-- `time_window`: Start and end events, timestamps, or commit interval.
-- `filters`: Included and excluded events.
+## Preserve the measurement invariants
 
-### Reference semantics
+1. Compare compatible definitions, canonical units, scopes, windows, filters,
+   aggregations, and denominators. In matched experiments, also match repository
+   revision, task, harness, foundation model, tool access, limits, and retry policy.
+   Equal unknown controls do not establish a match.
+2. Declare references separately from observations and cite their authority.
+   Missing thresholds remain unknown; never invent a passing bound.
+3. Represent unavailable values as the literal `"unknown"`. Zero is a measured
+   value, not an encoding of missing or stale evidence. A zero rate denominator
+   produces unknown, never zero or infinity.
+4. Preserve values, signed deltas, raw margin, uncertainty, and missingness.
+   A status does not replace the arithmetic. Unknown uncertainty is not zero.
+5. Trace derived values to their inputs, evidence references, and generator version.
+   Inspect evidence when the claim depends on its truth; structural validation
+   does not authenticate a source or prove its interpretation.
+6. Declare a rate's denominator. Do not mix per-run, per-attempted-task, and
+   per-accepted-task rates.
+7. Keep correctness and acceptance primary. Individual numeric comparisons do not
+   establish overall MAGE success, statistical significance, or efficiency gains
+   without the study's acceptance evidence.
+8. Do not use a weighted reconstruction-cost composite until the team approves
+   its weights. The current checker intentionally has no arbitrary formula or
+   weighted-sum execution; report its components separately.
 
-- `kind`: `fixed_bound`, `budget`, `capacity_envelope`, `matched_baseline`, or `target_range`.
-- `value`: The declared reference value or interval.
-- `unit`: Must be compatible with the measured quantity.
-- `tolerance`: Acceptable variation around the reference.
-- `source_refs`: Decision, configuration, or baseline data that supplied the reference.
+## Supported measurement relations
 
-## Report a comparison
+The checker calculates `value`, `sum`, `count`, `count_distinct`, `mean`,
+and `ratio`. A ratio uses explicitly labeled numerator and denominator inputs.
+Use that mechanism for acceptance, rework, defect escape, retained-work rates,
+human minutes per task, or resource use per accepted task; define each quantity's
+own units and denominator. Unsupported aggregations require a deliberate extension,
+not an inferred formula.
 
-Use a result record that retains the values needed to inspect the conclusion.
-The values below are illustrative, not experiment evidence.
-
-```yaml
-measurement_id: reconstruction.files-read
-run_id: run-0001
-condition: mage
-observed_value: 41
-reference_value: 58
-unit: distinct_files
-delta: -17
-relative_delta: -0.2931
-margin_to_bound: null
-status: lower_than_reference
-uncertainty: null
-evidence_refs:
-  - runs/run-0001/events.jsonl
-```
-
-`status` summarizes the comparison but never replaces the underlying values.
-When no valid comparison exists, use `unknown` or `not_comparable`; do not manufacture a pass or fail.
-
-## Invariants
-
-Preserve these rules when defining, calculating, validating, or reporting measurements:
-
-1. **Compatible comparisons.** Compare only quantities with compatible definitions, units, scopes, time windows, filters, and aggregation methods.
-2. **Separate references.** Store baselines, budgets, targets, tolerances, and capacity envelopes separately from observations.
-3. **Explicit unknowns.** Missing, stale, or invalid observations remain `unknown`; they never become zero, empty, false, or permitted.
-4. **Preserved margin.** Retain the observed value, reference value, delta, and uncertainty where available. Do not reduce the record to pass or fail.
-5. **Traceable derivation.** Every derived quantity names its source observations and derivation version.
-6. **No mixed denominators.** Rate measures declare their denominator, such as `per_run`, `per_attempted_task`, or `per_accepted_task`.
-7. **No hidden enforcement.** A comparison reports evidence. A separate policy decides whether to observe, warn, adapt, degrade, or gate.
-8. **Primary-outcome priority.** Efficiency gains cannot offset a decline in correctness unless the study protocol explicitly defines that tradeoff.
-
-## Derived relations
-
-Use explicit formulas and define the denominator at each site.
-The following relations are starting points, not approved success thresholds.
-
-```text
-acceptance_rate = accepted_tasks / attempted_tasks
-
-retained_work_rate = retained_generated_changes / landed_generated_changes
-
-rework_rate = corrective_changes / landed_changes
-
-reconstruction_cost = weighted_sum(
-  file_reads,
-  searches,
-  repeated_reads,
-  navigation_calls,
-  input_tokens,
-  time_to_first_implementation
-)
-
-defect_escape_rate = escaped_defects / accepted_tasks
-
-human_attention_per_task = human_attention_minutes / attempted_tasks
-
-efficiency_per_accepted_task = total_resource_use / accepted_tasks
-```
-
-Do not use `reconstruction_cost` as a composite until the team approves its weights.
-Until then, report its components separately.
-
-## Validate before reporting
-
-Reject or flag a measurement when:
-
-- the quantity or reference has no unit;
-- the observation and reference units are incompatible;
-- the time window or unit of analysis is absent;
-- an aggregation has no declared function;
-- a rate has no denominator;
-- a derived value has no source references or generator version;
-- missing data has been encoded as zero;
-- baseline and treatment runs use different definitions;
-- the repository revision, task, harness, foundation model, tool access, limits, or retry policy differs across a matched comparison;
-- a result contains only a status and discards the observed value or margin.
+The synthetic [four-chain example](examples/four-chains.json) covers accepted
+completion, rework, reconstruction, and escaped defects. The
+[budget example](examples/budget.json) shows a bound violation with a preserved
+negative margin. The [tests](tests/test_measure.py) exercise valid calculations,
+missing evidence, mismatched comparisons, and altered saved reports.
 
 ## Initial MAGE experiment
 
