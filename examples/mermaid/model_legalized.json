@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "repository": "org/repo",
+  "components": [
+    {
+      "id": "orders.api",
+      "path": "api.py",
+      "layer": "api",
+      "responsibility": "HTTP surface",
+      "external": false
+    },
+    {
+      "id": "orders.service",
+      "path": "service.py",
+      "layer": "service",
+      "responsibility": "Business logic",
+      "external": false
+    },
+    {
+      "id": "orders.db",
+      "path": "database.py",
+      "layer": "database",
+      "responsibility": "Persistence",
+      "external": false
+    }
+  ],
+  "external_systems": [],
+  "relations": [
+    {
+      "from": "orders.api",
+      "to": "orders.service",
+      "type": "IMPORTS",
+      "status": "sanctioned"
+    },
+    {
+      "from": "orders.service",
+      "to": "orders.db",
+      "type": "IMPORTS",
+      "status": "sanctioned"
+    }
+  ],
+  "policy": {
+    "layers": [
+      "api",
+      "service",
+      "database"
+    ],
+    "relation_types": [
+      "IMPORTS",
+      "CONTAINS",
+      "CALLS",
+      "READS",
+      "WRITES"
+    ],
+    "matrix": {
+      "IMPORTS": {
+        "api": {
+          "service": "permitted",
+          "database": "permitted"
+        },
+        "service": {
+          "database": "permitted"
+        }
+      }
+    }
+  },
+  "constraints": [
+    {
+      "id": "C1",
+      "text": "api may not reach persistence directly",
+      "authority": "authored"
+    }
+  ]
+}
