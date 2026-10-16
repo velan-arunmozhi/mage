@@ -15,6 +15,7 @@ def is_aligned(observed_edge: dict, model: dict) -> tuple:
     ext_systems = {e["id"]: e for e in model.get("external_systems", [])}
     
     if from_id not in components:
+        # An edge we cannot attribute to a declared component is an inspection gap, not a verdict.
         return ("unresolved", "unknown_source", {"from": from_id})
     from_comp = components[from_id]
     from_layer = from_comp.get("layer")
