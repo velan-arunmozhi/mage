@@ -1,0 +1,545 @@
+{
+  "schema_version": 1,
+  "model_class": "measurement",
+  "synthetic": true,
+  "definitions": [
+    {
+      "id": "correctness.acceptance",
+      "question": "Compare acceptance_rate between matched synthetic conditions.",
+      "scope": {
+        "repository": "fixture:synthetic-repo",
+        "unit_of_analysis": "run"
+      },
+      "claim_type": "declared",
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "generator_version": "fixture-1",
+      "property": "The same quantity definition and run controls apply to both conditions.",
+      "quality_attribute": "correctness",
+      "quantity": {
+        "name": "acceptance_rate",
+        "unit": "accepted_per_attempted_task",
+        "value_type": "number",
+        "direction": "higher_is_better",
+        "aggregation": "ratio",
+        "minimum": 0,
+        "time_window": {
+          "start": "run_started",
+          "end": "review_completed"
+        },
+        "filters": {
+          "include": [
+            "correctness_observations"
+          ],
+          "exclude": []
+        },
+        "denominator": "attempted_tasks",
+        "maximum": 1
+      },
+      "missing_data": {
+        "representation": "unknown",
+        "policy": "propagate_unknown"
+      },
+      "generated_at": "2026-10-16T12:00:00Z",
+      "confidence": "known"
+    },
+    {
+      "id": "durability.rework",
+      "question": "Compare rework_rate between matched synthetic conditions.",
+      "scope": {
+        "repository": "fixture:synthetic-repo",
+        "unit_of_analysis": "run"
+      },
+      "claim_type": "declared",
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "generator_version": "fixture-1",
+      "property": "The same quantity definition and run controls apply to both conditions.",
+      "quality_attribute": "durability",
+      "quantity": {
+        "name": "rework_rate",
+        "unit": "corrective_per_landed_change",
+        "value_type": "number",
+        "direction": "lower_is_better",
+        "aggregation": "ratio",
+        "minimum": 0,
+        "time_window": {
+          "start": "run_started",
+          "end": "review_completed"
+        },
+        "filters": {
+          "include": [
+            "durability_observations"
+          ],
+          "exclude": []
+        },
+        "denominator": "landed_changes"
+      },
+      "missing_data": {
+        "representation": "unknown",
+        "policy": "propagate_unknown"
+      },
+      "generated_at": "2026-10-16T12:00:00Z",
+      "confidence": "known"
+    },
+    {
+      "id": "reconstruction.files-read",
+      "question": "Compare files_read between matched synthetic conditions.",
+      "scope": {
+        "repository": "fixture:synthetic-repo",
+        "unit_of_analysis": "run"
+      },
+      "claim_type": "declared",
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "generator_version": "fixture-1",
+      "property": "The same quantity definition and run controls apply to both conditions.",
+      "quality_attribute": "reconstruction_cost",
+      "quantity": {
+        "name": "files_read",
+        "unit": "distinct_files",
+        "value_type": "integer",
+        "direction": "lower_is_better",
+        "aggregation": "count_distinct",
+        "minimum": 0,
+        "time_window": {
+          "start": "run_started",
+          "end": "first_implementation_edit"
+        },
+        "filters": {
+          "include": [
+            "reconstruction_cost_observations"
+          ],
+          "exclude": []
+        }
+      },
+      "missing_data": {
+        "representation": "unknown",
+        "policy": "propagate_unknown"
+      },
+      "generated_at": "2026-10-16T12:00:00Z",
+      "confidence": "known"
+    },
+    {
+      "id": "quality.defect-escape",
+      "question": "Compare defect_escape_rate between matched synthetic conditions.",
+      "scope": {
+        "repository": "fixture:synthetic-repo",
+        "unit_of_analysis": "run"
+      },
+      "claim_type": "declared",
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "generator_version": "fixture-1",
+      "property": "The same quantity definition and run controls apply to both conditions.",
+      "quality_attribute": "defect_escape",
+      "quantity": {
+        "name": "defect_escape_rate",
+        "unit": "escaped_defects_per_accepted_task",
+        "value_type": "number",
+        "direction": "lower_is_better",
+        "aggregation": "ratio",
+        "minimum": 0,
+        "time_window": {
+          "start": "run_started",
+          "end": "review_completed"
+        },
+        "filters": {
+          "include": [
+            "defect_escape_observations"
+          ],
+          "exclude": []
+        },
+        "denominator": "accepted_tasks"
+      },
+      "missing_data": {
+        "representation": "unknown",
+        "policy": "propagate_unknown"
+      },
+      "generated_at": "2026-10-16T12:00:00Z",
+      "confidence": "known"
+    }
+  ],
+  "observations": [
+    {
+      "id": "correctness.acceptance.baseline",
+      "definition_id": "correctness.acceptance",
+      "run_id": "fixture-baseline",
+      "condition": "baseline",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "accepted_per_attempted_task",
+      "inputs": {
+        "numerator": 8,
+        "denominator": 10
+      },
+      "value": 0.8,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/correctness.acceptance/0"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "correctness.acceptance.mage",
+      "definition_id": "correctness.acceptance",
+      "run_id": "fixture-mage",
+      "condition": "mage",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "accepted_per_attempted_task",
+      "inputs": {
+        "numerator": 9,
+        "denominator": 10
+      },
+      "value": 0.9,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/correctness.acceptance/1"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "durability.rework.baseline",
+      "definition_id": "durability.rework",
+      "run_id": "fixture-baseline",
+      "condition": "baseline",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "corrective_per_landed_change",
+      "inputs": {
+        "numerator": 2,
+        "denominator": 10
+      },
+      "value": 0.2,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/durability.rework/0"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "durability.rework.mage",
+      "definition_id": "durability.rework",
+      "run_id": "fixture-mage",
+      "condition": "mage",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "corrective_per_landed_change",
+      "inputs": {
+        "numerator": 1,
+        "denominator": 10
+      },
+      "value": 0.1,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/durability.rework/1"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "reconstruction.files-read.baseline",
+      "definition_id": "reconstruction.files-read",
+      "run_id": "fixture-baseline",
+      "condition": "baseline",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "distinct_files",
+      "inputs": {
+        "samples": [
+          "a.py",
+          "b.py",
+          "c.py",
+          "d.py",
+          "e.py",
+          "f.py",
+          "a.py"
+        ]
+      },
+      "value": 6,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/reconstruction.files-read/0"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "reconstruction.files-read.mage",
+      "definition_id": "reconstruction.files-read",
+      "run_id": "fixture-mage",
+      "condition": "mage",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "distinct_files",
+      "inputs": {
+        "samples": [
+          "a.py",
+          "b.py",
+          "c.py",
+          "d.py",
+          "a.py"
+        ]
+      },
+      "value": 4,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/reconstruction.files-read/1"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "quality.defect-escape.baseline",
+      "definition_id": "quality.defect-escape",
+      "run_id": "fixture-baseline",
+      "condition": "baseline",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "escaped_defects_per_accepted_task",
+      "inputs": {
+        "numerator": 1,
+        "denominator": 8
+      },
+      "value": 0.125,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/quality.defect-escape/0"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    },
+    {
+      "id": "quality.defect-escape.mage",
+      "definition_id": "quality.defect-escape",
+      "run_id": "fixture-mage",
+      "condition": "mage",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "escaped_defects_per_accepted_task",
+      "inputs": {
+        "numerator": 0,
+        "denominator": 9
+      },
+      "value": 0,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/quality.defect-escape/1"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    }
+  ],
+  "references": [
+    {
+      "id": "correctness.acceptance.reference",
+      "definition_id": "correctness.acceptance",
+      "kind": "matched_baseline",
+      "unit": "accepted_per_attempted_task",
+      "tolerance": 0,
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "observation_id": "correctness.acceptance.baseline"
+    },
+    {
+      "id": "durability.rework.reference",
+      "definition_id": "durability.rework",
+      "kind": "matched_baseline",
+      "unit": "corrective_per_landed_change",
+      "tolerance": 0,
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "observation_id": "durability.rework.baseline"
+    },
+    {
+      "id": "reconstruction.files-read.reference",
+      "definition_id": "reconstruction.files-read",
+      "kind": "matched_baseline",
+      "unit": "distinct_files",
+      "tolerance": 0,
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "observation_id": "reconstruction.files-read.baseline"
+    },
+    {
+      "id": "quality.defect-escape.reference",
+      "definition_id": "quality.defect-escape",
+      "kind": "matched_baseline",
+      "unit": "escaped_defects_per_accepted_task",
+      "tolerance": 0,
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "observation_id": "quality.defect-escape.baseline"
+    }
+  ],
+  "comparisons": [
+    {
+      "id": "correctness.acceptance.comparison",
+      "observation_id": "correctness.acceptance.mage",
+      "reference_id": "correctness.acceptance.reference"
+    },
+    {
+      "id": "durability.rework.comparison",
+      "observation_id": "durability.rework.mage",
+      "reference_id": "durability.rework.reference"
+    },
+    {
+      "id": "reconstruction.files-read.comparison",
+      "observation_id": "reconstruction.files-read.mage",
+      "reference_id": "reconstruction.files-read.reference"
+    },
+    {
+      "id": "quality.defect-escape.comparison",
+      "observation_id": "quality.defect-escape.mage",
+      "reference_id": "quality.defect-escape.reference"
+    }
+  ]
+}

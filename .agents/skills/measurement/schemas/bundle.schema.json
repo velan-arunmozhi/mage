@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MAGE measurement bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model_class", "synthetic", "definitions", "observations", "references", "comparisons"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "model_class": {"const": "measurement"},
+    "synthetic": {"type": "boolean"},
+    "definitions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/definition"}},
+    "observations": {"type": "array", "items": {"$ref": "#/$defs/observation"}},
+    "references": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+    "comparisons": {"type": "array", "items": {"$ref": "#/$defs/comparison"}}
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "texts": {"type": "array", "items": {"$ref": "#/$defs/text"}, "uniqueItems": true},
+    "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}, "uniqueItems": true},
+    "value": {"oneOf": [{"type": "number"}, {"const": "unknown"}]},
+    "nonnegative": {"oneOf": [{"type": "number", "minimum": 0}, {"const": "unknown"}]},
+    "definition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "question", "scope", "claim_type", "source_authority", "source_refs", "generated_at", "generator_version", "confidence", "property", "quality_attribute", "quantity", "missing_data"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"},
+        "question": {"$ref": "#/$defs/text"},
+        "scope": {
+          "type": "object", "additionalProperties": false, "required": ["repository", "unit_of_analysis"],
+          "properties": {"repository": {"$ref": "#/$defs/text"}, "unit_of_analysis": {"$ref": "#/$defs/text"}}
+        },
+        "claim_type": {"enum": ["declared", "derived"]},
+        "source_authority": {"$ref": "#/$defs/text"},
+        "source_refs": {"$ref": "#/$defs/evidence"},
+        "generator_version": {"$ref": "#/$defs/text"},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "confidence": {"enum": ["known", "inferred", "uncertain"]},
+        "property": {"$ref": "#/$defs/text"},
+        "quality_attribute": {"$ref": "#/$defs/text"},
+        "quantity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "unit", "value_type", "direction", "aggregation", "time_window", "filters"],
+          "properties": {
+            "name": {"$ref": "#/$defs/text"}, "unit": {"$ref": "#/$defs/text"},
+            "value_type": {"enum": ["integer", "number"]},
+            "direction": {"enum": ["higher_is_better", "lower_is_better", "target", "descriptive"]},
+            "aggregation": {"enum": ["value", "sum", "count", "count_distinct", "mean", "ratio"]},
+            "denominator": {"$ref": "#/$defs/text"},
+            "minimum": {"type": "number"}, "maximum": {"type": "number"},
+            "time_window": {
+              "type": "object", "additionalProperties": false, "required": ["start", "end"],
+              "properties": {"start": {"$ref": "#/$defs/text"}, "end": {"$ref": "#/$defs/text"}}
+            },
+            "filters": {
+              "type": "object", "additionalProperties": false, "required": ["include", "exclude"],
+              "properties": {"include": {"$ref": "#/$defs/texts"}, "exclude": {"$ref": "#/$defs/texts"}}
+            }
+          },
+          "allOf": [{"if": {"properties": {"aggregation": {"const": "ratio"}}}, "then": {"required": ["denominator"]}}]
+        },
+        "missing_data": {
+          "type": "object", "additionalProperties": false, "required": ["representation", "policy"],
+          "properties": {
+            "representation": {"const": "unknown"},
+            "policy": {"enum": ["propagate_unknown", "exclude_and_report"]}
+          }
+        }
+      }
+    },
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "revision", "task", "harness", "foundation_model", "tool_access", "resource_limits", "retry_policy"],
+      "properties": {
+        "repository": {"$ref": "#/$defs/text"}, "revision": {"$ref": "#/$defs/text"},
+        "task": {"$ref": "#/$defs/text"}, "harness": {"$ref": "#/$defs/text"},
+        "foundation_model": {"$ref": "#/$defs/text"},
+        "tool_access": {"oneOf": [{"$ref": "#/$defs/texts"}, {"const": "unknown"}]},
+        "resource_limits": {
+          "oneOf": [{"const": "unknown"}, {"type": "object", "minProperties": 1, "additionalProperties": {"oneOf": [{"type": "number", "minimum": 0}, {"$ref": "#/$defs/text"}]}}]
+        },
+        "retry_policy": {"$ref": "#/$defs/text"}
+      }
+    },
+    "observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "definition_id", "run_id", "condition", "context", "unit", "inputs", "value", "evidence_state", "evidence_refs", "observed_at", "generator_version", "uncertainty"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "definition_id": {"$ref": "#/$defs/text"},
+        "run_id": {"$ref": "#/$defs/text"}, "condition": {"$ref": "#/$defs/text"},
+        "context": {"$ref": "#/$defs/context"}, "unit": {"$ref": "#/$defs/text"},
+        "inputs": {
+          "oneOf": [
+            {"type": "object", "additionalProperties": false, "required": ["samples"], "properties": {"samples": {"type": "array", "items": {"oneOf": [{"type": "number"}, {"$ref": "#/$defs/text"}]}}}},
+            {"type": "object", "additionalProperties": false, "required": ["numerator", "denominator"], "properties": {"numerator": {"$ref": "#/$defs/nonnegative"}, "denominator": {"$ref": "#/$defs/nonnegative"}}}
+          ]
+        },
+        "value": {"$ref": "#/$defs/value"},
+        "evidence_state": {"enum": ["known", "missing", "stale", "invalid"]},
+        "evidence_refs": {"$ref": "#/$defs/texts"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "generator_version": {"$ref": "#/$defs/text"},
+        "uncertainty": {"$ref": "#/$defs/nonnegative"}
+      }
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "definition_id", "kind", "unit", "tolerance", "source_authority", "source_refs"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "definition_id": {"$ref": "#/$defs/text"},
+        "kind": {"enum": ["matched_baseline", "upper_bound", "lower_bound", "target_range"]},
+        "unit": {"$ref": "#/$defs/text"}, "tolerance": {"$ref": "#/$defs/nonnegative"},
+        "source_authority": {"$ref": "#/$defs/text"}, "source_refs": {"$ref": "#/$defs/evidence"},
+        "observation_id": {"$ref": "#/$defs/text"},
+        "value": {"oneOf": [{"$ref": "#/$defs/value"}, {"type": "object", "additionalProperties": false, "required": ["lower", "upper"], "properties": {"lower": {"type": "number"}, "upper": {"type": "number"}}}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "matched_baseline"}}}, "then": {"required": ["observation_id"], "not": {"required": ["value"]}}, "else": {"required": ["value"], "not": {"required": ["observation_id"]}}}
+      ]
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false, "required": ["id", "observation_id", "reference_id"],
+      "properties": {"id": {"$ref": "#/$defs/text"}, "observation_id": {"$ref": "#/$defs/text"}, "reference_id": {"$ref": "#/$defs/text"}}
+    }
+  }
+}

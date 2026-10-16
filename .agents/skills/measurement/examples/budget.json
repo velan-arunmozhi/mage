@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "model_class": "measurement",
+  "synthetic": true,
+  "definitions": [
+    {
+      "id": "efficiency.duration",
+      "question": "How much does this synthetic duration exceed the declared budget?",
+      "scope": {
+        "repository": "fixture:synthetic-repo",
+        "unit_of_analysis": "run"
+      },
+      "claim_type": "declared",
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ],
+      "generator_version": "fixture-1",
+      "property": "The same quantity definition and run controls apply to both conditions.",
+      "quality_attribute": "efficiency",
+      "quantity": {
+        "name": "duration",
+        "unit": "seconds",
+        "value_type": "number",
+        "direction": "lower_is_better",
+        "aggregation": "value",
+        "minimum": 0,
+        "time_window": {
+          "start": "run_started",
+          "end": "run_completed"
+        },
+        "filters": {
+          "include": [
+            "elapsed_time"
+          ],
+          "exclude": []
+        }
+      },
+      "missing_data": {
+        "representation": "unknown",
+        "policy": "propagate_unknown"
+      },
+      "generated_at": "2026-10-16T12:00:00Z",
+      "confidence": "known"
+    }
+  ],
+  "observations": [
+    {
+      "id": "duration.mage",
+      "definition_id": "efficiency.duration",
+      "run_id": "fixture-mage",
+      "condition": "mage",
+      "context": {
+        "repository": "fixture:synthetic-repo",
+        "revision": "fixture-revision-1",
+        "task": "fixture-task-1",
+        "harness": "fixture-harness-1",
+        "foundation_model": "fixture-model-1",
+        "tool_access": [
+          "read",
+          "edit",
+          "test"
+        ],
+        "resource_limits": {
+          "wall_time_seconds": 600,
+          "input_tokens": 10000
+        },
+        "retry_policy": "one-attempt"
+      },
+      "unit": "seconds",
+      "inputs": {
+        "samples": [
+          12
+        ]
+      },
+      "value": 12,
+      "evidence_state": "known",
+      "evidence_refs": [
+        "fixture:synthetic/duration"
+      ],
+      "observed_at": "2026-10-16T12:00:00Z",
+      "generator_version": "fixture-1",
+      "uncertainty": "unknown"
+    }
+  ],
+  "references": [
+    {
+      "id": "duration.budget",
+      "definition_id": "efficiency.duration",
+      "kind": "upper_bound",
+      "unit": "seconds",
+      "value": 10,
+      "tolerance": 0,
+      "source_authority": "synthetic fixture protocol",
+      "source_refs": [
+        "fixture:synthetic-protocol"
+      ]
+    }
+  ],
+  "comparisons": [
+    {
+      "id": "duration.comparison",
+      "observation_id": "duration.mage",
+      "reference_id": "duration.budget"
+    }
+  ]
+}

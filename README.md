@@ -4,6 +4,25 @@ A bootstrapped MAGE environment would attempt to externalize some of this knowle
 
 Our initial goal is to test whether this can be done efficiently on an existing codebase and whether the resulting representations improve agent performance.
 
+## Python environment
+
+The project uses uv to manage a shared `.venv` and locked dependencies. From the
+repository root:
+
+```bash
+uv sync
+uv run python .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json
+uv run python -m unittest discover -s .agents/skills/measurement/tests -v
+```
+
+`uv run` selects the project environment automatically. For an interactive shell,
+run `source .venv/bin/activate`; select `.venv/bin/python` as the interpreter in
+your editor. An absolute interpreter such as `/opt/homebrew/bin/python3` bypasses
+the virtual environment even after activation.
+
+The structural OCL pilot retains its separate environment because of the upstream
+dependency conflict documented in its instructions.
+
 The [structural OCL pilot](examples/ocl-structural/README.md) is a runnable first
 example: extract Python imports, represent them with BESSER, and evaluate an OCL
 boundary rule against conforming and violating code fixtures.
