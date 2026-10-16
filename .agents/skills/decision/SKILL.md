@@ -7,9 +7,30 @@ description: >-
   option combinations are valid — and when replacing a decision duplicated across
   implementation sites with an explicit decision table, access-control matrix, policy
   graph, feature model, or constraint system.
+  Uses typed B-UML snapshots and executable B-OCL invariants.
 ---
 
 # Decision Model
+
+## Executable representation: B-UML and B-OCL
+
+For new or refreshed decision slices, store machine-readable facts in a typed
+B-UML snapshot (`model.json`) and independently authored obligations in `.ocl`
+files. Use the [B-OCL workflow](references/bocl.md), its
+[snapshot template](assets/model.example.json), and
+[example invariant](assets/snapshot.example.ocl). Run
+[scripts/validate_model.py](scripts/validate_model.py) and save the report beside
+the project model. Keep project outputs outside the installed skill.
+
+The Markdown contracts below are human-readable projections and evidence notes;
+the JSON snapshot owns the executable facts and OCL owns the checked predicates.
+Preserve any established authoritative source and derive the snapshot from it.
+Migrate saved slices when they are next used: retain IDs, authority, evidence,
+freshness, and omissions, and verify source correspondence before reuse.
+Do not invent data or policy to obtain a Boolean result. Unknown values remain
+`null`; incomplete coverage remains incomplete. Report only the checks actually
+executed. B-OCL snapshot checks establish neither liveness nor runtime enforcement.
+
 
 Use this skill when the engineering question is normative:
 
@@ -35,8 +56,8 @@ A structural edge and a decision edge draw identically and mean opposite kinds o
 `A → B` as a structural edge says "A calls B," a fact about what happens; the same
 arrow as a decision edge says "A **may** call B," a rule about what is permitted.
 
-**The absence carries the weight.** A missing structural edge means "no such call
-happens." A missing decision edge means "no such call is allowed." That gap between
+**The absence carries the weight.** A missing structural edge outside inspected coverage is unknown. A missing
+decision edge means "no such call is allowed" only within a declared closed policy domain. That gap between
 the two readings is the reason this model exists, and it is the test that keeps the
 families apart: a structural slice may *cite* a sanctioned edge, but a permission the
 code has to ask about is owned here.
@@ -163,8 +184,9 @@ the structural model's components rather than minting a parallel namespace:
    anchor`. A site that does not consume the model is a correspondence gap; record it
    as one rather than as a defect in the site.
 5. **Properties:** 1–3 checkable rules — safety ("a case the model does not cover
-   resolves by the model's declared default, never by the implementation") and liveness
-   ("an admitted case names the authority that permitted it").
+   resolves by the model's declared default, never by the implementation") and attribution
+   ("an admitted case names the authority that permitted it"). This is a snapshot
+   property, not a liveness proof.
 6. **Validation findings:** check, inspected domain, result, evidence, limitations.
 7. **Freshness:** link to this decision's entry in `manifest.md`.
 

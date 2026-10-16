@@ -1,0 +1,2 @@
+context Comparison inv ComparisonArithmetic:
+  self.unit = self.reference_unit and self.delta = self.observed - self.reference and self.margin = self.reference - self.observed

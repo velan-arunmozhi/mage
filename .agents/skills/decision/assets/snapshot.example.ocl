@@ -1,0 +1,2 @@
+context DecisionCase inv ReadPolicy:
+  ((self.role = 'reader' and self.action = 'read') implies self.verdict = 'permitted') and ((self.role <> 'reader' or self.action <> 'read') implies self.verdict = 'prohibited')

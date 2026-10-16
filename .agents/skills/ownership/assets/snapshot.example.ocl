@@ -1,0 +1,2 @@
+context ClaimAction inv CurrentClaimMutation:
+  self.effect_applied implies (self.actor = self.current_holder and self.presented_claim = self.current_claim and self.observed_at < self.expires_at)

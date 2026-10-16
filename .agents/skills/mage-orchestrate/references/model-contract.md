@@ -1,11 +1,15 @@
 # Model handoffs and suite adapters
 
 Read this when composing models, deciding whether to reuse a saved slice, or selecting
-the behavioral or measurement file in the current suite.
+an executable B-UML/B-OCL adapter in the current suite.
 
 ## The handoff
 
-Use the native model formats. At the boundary between skills, preserve these semantics
+Use the typed JSON snapshots and separate OCL files linked from each model skill.
+Markdown is the human-readable projection and evidence record. The
+[shared runtime contract](../../_shared/bocl/reference.md) defines executable inputs,
+coverage, and reports; keep `_shared/` installed beside the six skills. At the
+boundary between skills, preserve these semantics
 in a short Markdown record or equivalent existing metadata. Add fields only where the
 question needs them; do not require a new universal schema or backing service.
 
@@ -69,21 +73,21 @@ A past acquisition record or cached dashboard cannot supply missing current evid
 
 ## Current suite adapters
 
-The table describes the files inspected while creating this coordinator. Reinspect the
-selected entrypoint if its contents change; do not treat these notes as permanent facts
-about every installation.
+Each skill now supplies a typed snapshot template, an OCL invariant, a wrapper
+around the shared B-OCL runtime, and model-specific coverage guidance. Reinspect
+the selected entrypoint when its contents change.
 
 | Model | Current entrypoint | Coordination adjustment |
 | --- | --- | --- |
-| Structural | [SKILL.md](../../structural/SKILL.md) | Apply its index/slice/manifest contract; share its existing entity IDs. |
-| Behavioral | [SKILL.md](../../behavioral/SKILL.md) | It is an instruction file without YAML skill metadata and tells the reader to reuse an existing cache. Read it explicitly and perform the freshness check above before reuse. |
-| Ownership | [SKILL.md](../../ownership/SKILL.md) | Use claim identity and validity; obtain current observations separately; link to behavioral transitions. |
-| Decision | [SKILL.md](../../decision/SKILL.md) | Preserve a declared case domain and default. Outside an established policy's coverage, report unknown policy rather than inventing a verdict. |
-| Measurement | [SKILL.md](../../measurement/SKILL.md) | It is the initial experiment's measurement specification without YAML skill metadata. Read it as a reference; adapt applicable semantics to the actual quantitative question. |
-| Provenance | [SKILL.md](../../provenance/SKILL.md) | Capture consequential history once; carry its cause, actor/run, targets, results, and evidence. |
+| Structural | [B-OCL](../../structural/references/bocl.md) | Prefer its existing Python AST extractor for direct imports; normalize other relations as Dependency snapshots. Preserve IDs and index/slice/manifest evidence. |
+| Behavioral | [B-OCL](../../behavioral/references/bocl.md) | Step snapshots check guarded transitions. Trace continuity, reachability, interleavings, and liveness need separate analysis. |
+| Ownership | [B-OCL](../../ownership/references/bocl.md) | Dated ClaimAction snapshots distinguish presented/current grants and stale effects; obtain current observations separately. |
+| Decision | [B-OCL](../../decision/references/bocl.md) | Case snapshots check verdicts against independent policy. Reconcile the declared case domain and default separately. |
+| Measurement | [B-OCL](../../measurement/references/bocl.md) | Comparison snapshots preserve units, values, delta, and margin. Verify aggregation and comparability in the evidence chain. |
+| Provenance | [B-OCL](../../provenance/references/bocl.md) | Derive Operation snapshots from consequential history; record presence checks do not prove causal truth or mutation coverage. |
 
-The behavioral adapter supplies the missing metadata: scope, source anchors/hashes,
-discovery coverage, freshness, claim/authority status, and analysis limits. Separate
+Every snapshot needs scope, source anchors/hashes, discovery coverage, freshness,
+claim/authority status, and analysis limits in its metadata or linked evidence. Separate
 transitions extracted from code from transitions independently declared legal. It is
 useful to model a protocol with defects; extraction does not validate its intent. A
 missing edge forbids a transition only in a declared complete transition relation.
@@ -97,6 +101,14 @@ missing authority if the task depends on it; do not treat those paths as availab
 or silently supply experiment thresholds. Unknown values remain unknown, never zero.
 
 ## Storage and checkpoints
+
+In each model store, keep `model.json`, separately authored `.ocl` files, and
+`reports/` beside the existing Markdown projection. For provenance, derive these
+under `.mage/provenance/` while retaining `.mage/provenance.md` as the default
+append-only history. Existing stores and authoritative sources take precedence.
+Reports are advisory and attributable to their input/rule hashes, not runtime
+enforcement or proof of freshness. JSON nulls and uncovered observations remain
+unknown/partial; no populated observation set means no passing snapshot result.
 
 Use established project locations first. Defaults from the current model skills are:
 

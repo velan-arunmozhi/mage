@@ -1,0 +1,2 @@
+context Step inv LegalStep:
+  self.guard_satisfied and ((self.from_state = 'pending' and self.to_state = 'running' and self.trigger = 'start') or (self.from_state = 'running' and self.to_state = 'done' and self.trigger = 'complete'))

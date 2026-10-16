@@ -5,10 +5,37 @@ description: >-
   evidence-backed account of a codebase: what parts exist, how they connect, and which
   dependencies are permitted. Use for repository architecture questions, component and
   dependency mapping, architectural boundaries, structural change impact, and
-  bootstrapping persistent structural knowledge for coding agents.
+  bootstrapping persistent structural knowledge for coding agents, and evaluating
+  authored module-boundary constraints against Python imports with B-UML and OCL.
+  Uses typed B-UML snapshots and executable B-OCL invariants.
 ---
 
 # Structural Model
+
+## Executable representation: B-UML and B-OCL
+
+For new or refreshed structural slices, store machine-readable facts in a typed
+B-UML snapshot (`model.json`) and independently authored obligations in `.ocl`
+files. Use the [B-OCL workflow](references/bocl.md), its
+[snapshot template](assets/model.example.json), and
+[example invariant](assets/snapshot.example.ocl). Run
+[scripts/validate_model.py](scripts/validate_model.py) and save the report beside
+the project model. Keep project outputs outside the installed skill.
+
+For the existing Python direct-import workflow, its extractor report already
+supplies the machine-readable facts and evidence. Keep that association-based
+adapter and report instead of maintaining an additional flat snapshot of the
+same graph. Use the shared snapshot adapter for other normalized structural facts.
+
+The Markdown contracts below are human-readable projections and evidence notes;
+the JSON snapshot owns the executable facts and OCL owns the checked predicates.
+Preserve any established authoritative source and derive the snapshot from it.
+Migrate saved slices when they are next used: retain IDs, authority, evidence,
+freshness, and omissions, and verify source correspondence before reuse.
+Do not invent data or policy to obtain a Boolean result. Unknown values remain
+`null`; incomplete coverage remains incomplete. Report only the checks actually
+executed. B-OCL snapshot checks establish neither liveness nor runtime enforcement.
+
 
 Use this skill when the engineering question is about what exists:
 
@@ -109,6 +136,27 @@ the repository-specific outputs they produce.
   bypasses, and exceptions only from authoritative project intent, with citations. Where intent
   is missing, say it is unspecified and label any recommendation as proposed.
 
+### Executable Python boundary checks
+
+For a Python module-boundary question, read [references/ocl.md](references/ocl.md)
+and use the bundled [checker](scripts/validate_structure.py) to convert actual source
+imports into B-UML objects and evaluate a separately authored OCL invariant. This is
+the preferred reusable path when the question fits its direct-import coverage; use
+existing project tooling where it already supplies the required evidence.
+
+Keep declarations, rule files, and JSON observations in the target project’s model
+location, outside the installed skill. Use project component IDs and explicit layer
+declarations; do not apply the example API/database policy to another repository
+without authority. The adapter handles Python modules, packages, and relative imports,
+with an edge-local OCL subset. Other languages or graph-wide questions still require
+their own extractor/adapter; record unsupported coverage instead of claiming a pass.
+
+The JSON report supplies the entities, observed edges, per-edge verdicts, source hashes,
+and coverage for the Markdown contract below. Generate the slice and any diagram from
+that report, link it in validation findings and freshness metadata, and hand other
+skills its stable IDs and report path. Do not maintain an independently edited copy
+of the observed graph.
+
 ## 4. Save a small, navigable model
 
 Create these Markdown files using the contracts below. Adapt the names to an existing project
@@ -170,6 +218,9 @@ proposed model text and state plainly that it was not persisted.
   and valid index links.
 - Reconcile derived declarations with their source inside the inspected domain. A disconnected
   node or an unexpectedly sparse edge set is a possible coverage gap, not automatically a defect.
+- When running the OCL checker, inspect both the overall result and `coverage.status`.
+  A violation may coexist with partial coverage. Interpreter/input errors and unresolved
+  imports do not establish conformance; only executed checks belong in findings.
 - Compare observed dependencies against documented architectural rules. Report confirmed
   violations, conflicting intent, and unresolved cases separately.
 - Inspect cycles only where they are relevant, and call one a violation only when an

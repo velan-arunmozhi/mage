@@ -5,9 +5,30 @@ description: >-
   how long. Use for competing workers, stale actions, acquisition, release,
   transfer, expiry, reclamation, and crash/retry races. Distinguish current
   ownership from role permission, component responsibility, and capacity limits.
+  Uses typed B-UML snapshots and executable B-OCL invariants.
 ---
 
 # Ownership Model
+
+## Executable representation: B-UML and B-OCL
+
+For new or refreshed ownership slices, store machine-readable facts in a typed
+B-UML snapshot (`model.json`) and independently authored obligations in `.ocl`
+files. Use the [B-OCL workflow](references/bocl.md), its
+[snapshot template](assets/model.example.json), and
+[example invariant](assets/snapshot.example.ocl). Run
+[scripts/validate_model.py](scripts/validate_model.py) and save the report beside
+the project model. Keep project outputs outside the installed skill.
+
+The Markdown contracts below are human-readable projections and evidence notes;
+the JSON snapshot owns the executable facts and OCL owns the checked predicates.
+Preserve any established authoritative source and derive the snapshot from it.
+Migrate saved slices when they are next used: retain IDs, authority, evidence,
+freshness, and omissions, and verify source correspondence before reuse.
+Do not invent data or policy to obtain a Boolean result. Unknown values remain
+`null`; incomplete coverage remains incomplete. Report only the checks actually
+executed. B-OCL snapshot checks establish neither liveness nor runtime enforcement.
+
 
 Use this skill when the engineering question is:
 

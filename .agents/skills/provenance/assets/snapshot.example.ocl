@@ -1,0 +1,2 @@
+context Operation inv ConsequentialAttribution:
+  self.cause <> '' and self.actor <> '' and self.operation <> '' and self.target <> '' and self.mechanism <> '' and self.timestamp <> '' and self.result <> ''

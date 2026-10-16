@@ -68,8 +68,9 @@ Without adequate metadata, mark freshness unknown and inspect the relevant sourc
 Refresh affected facts, preserving authored intent and unrelated content.
 
 Use the [model contract](references/model-contract.md) for handoffs, freshness, and the
-behavioral and measurement adapters. Those adapters are required when using the current
-suite's behavioral or measurement files.
+six B-UML/B-OCL adapters. Each selected model owns its typed snapshot, independent OCL
+predicates, and human-readable evidence projection. The shared runtime is installed
+beside the six skills under `_shared/bocl/`.
 
 ## 3. Select the models by question
 
