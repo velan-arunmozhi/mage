@@ -1,0 +1,9 @@
+[project]
+name = "mage"
+version = "0.1.0"
+description = "Model-Based Agentic Software Engineering tooling"
+requires-python = ">=3.10"
+dependencies = [
+    "jsonschema>=4.18,<5",
+    "rfc3339-validator>=0.1.4,<0.2",
+]

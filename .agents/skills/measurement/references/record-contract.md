@@ -140,16 +140,23 @@ the checker when changing them. Values outside finite supported arithmetic fail.
 
 ## Run and verify
 
-Use a Python 3.9+ virtual environment; install the skill's `requirements.txt`.
-For example, from the repository root:
+In the MAGE repository, use the shared uv environment (Python 3.10+). From the
+repository root:
 
 ```bash
-python3 -m venv /tmp/mage-measurement-venv
-/tmp/mage-measurement-venv/bin/python -m pip install -r .agents/skills/measurement/requirements.txt
-/tmp/mage-measurement-venv/bin/python .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json > /tmp/mage-measurement-report.json
-/tmp/mage-measurement-venv/bin/python .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json --verify-report /tmp/mage-measurement-report.json
-/tmp/mage-measurement-venv/bin/python -m unittest discover -s .agents/skills/measurement/tests -v
+uv sync
+uv run python .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json > /tmp/mage-measurement-report.json
+uv run python .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json --verify-report /tmp/mage-measurement-report.json
+uv run python -m unittest discover -s .agents/skills/measurement/tests -v
 ```
+
+Use `source .venv/bin/activate` when running `python` directly, and select
+`.venv/bin/python` in your editor. An absolute system/Homebrew Python path does
+not use the project environment. The project's `pyproject.toml` and `uv.lock`
+declare and lock its dependencies; when changing this skill's requirements,
+update the project with `uv add -r .agents/skills/measurement/requirements.txt`.
+For a standalone skill installation outside this project, a Python 3.9+ virtual
+environment with this skill's `requirements.txt` remains supported.
 
 The report retains input/schema/checker hashes, engine and library versions,
 calculated observations and missingness, comparisons, evidence references, and

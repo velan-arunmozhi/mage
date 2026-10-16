@@ -103,12 +103,16 @@ other models. A result or event owned elsewhere is linked, not copied as a new a
 
 ### Use the implementation
 
-Install [requirements.txt](requirements.txt) into a Python 3.9+ environment.
-From the repository root, run the bundled synthetic example:
+In the MAGE repository, use its shared uv environment. From the repository root,
+run the bundled synthetic example:
 
 ```bash
-python3 .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json
+uv sync
+uv run python .agents/skills/measurement/scripts/measure.py .agents/skills/measurement/examples/four-chains.json
 ```
+
+For a standalone skill installation, install [requirements.txt](requirements.txt)
+into a Python 3.9+ environment and invoke the script with that interpreter.
 
 For actual work, use the project's experiment store; otherwise save a scoped bundle
 under `.mage/measurement/<scope-id>/bundle.json`. Keep actual evidence and outputs
