@@ -6,8 +6,8 @@
 # through an SSH local forward.
 #
 #   bash scripts/eval-host \
-#     --model-ssh billin19@scholar-k003 \
-#     --jump billin19@scholar.rcac.purdue.edu \
+#     --model-ssh ACCOUNT@ALLOCATED_GPU_NODE \
+#     --jump ACCOUNT@SCHOLAR_LOGIN_HOST \
 #     --remote-repo ~/dev/mage
 #
 # Add --setup-only to stop after the model is reachable from a container.

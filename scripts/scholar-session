@@ -4,7 +4,7 @@
 #   bash scripts/scholar-session
 #
 # Brings up llama-server for the known-good Qwen3-4B weights on $RCAC_SCRATCH,
-# then stops before benchmark grading. scholar-k003 is aarch64, Apptainer is
+# then stops before benchmark grading. The tested Spark node is aarch64, Apptainer is
 # installed, and /proc/sys/fs/binfmt_misc/qemu-x86_64 is absent, so linux/amd64
 # images (SWE-bench Pro, FeatureBench) cannot run here.
 #
