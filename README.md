@@ -27,7 +27,66 @@ The [structural OCL pilot](examples/ocl-structural/README.md) is a runnable firs
 example: extract Python imports, represent them with BESSER, and evaluate an OCL
 boundary rule against conforming and violating code fixtures.
 
-Codex: 
+## OpenCode on Scholar
+
+Use the [Scholar GPU setup guide](docs/scholar-opencode.md) for the working
+two-terminal workflow: allocate a GPU, reuse an existing llama.cpp build, create
+an SSH tunnel, and select the model in OpenCode.
+
+The guide includes first-time setup, cleanup, and troubleshooting for CUDA startup
+errors, binary architecture mismatches, and model selection. It prompts for your
+own account and allocated node rather than embedding personal login details.
+
+## Benchmark runs
+
+Interactive OpenCode use and benchmark grading have separate setup paths:
+
+- [Scholar/OpenCode guide](docs/scholar-opencode.md): model on the GPU node,
+  interactive OpenCode on the login node.
+- [eval-host](scripts/eval-host): OpenCode and the Docker benchmark grader on an
+  amd64 Linux host, connected to a model server. Run
+  `bash scripts/eval-host --help` for options.
+- [scholar-session](scripts/scholar-session): an alternative server helper that
+  can build llama.cpp under scratch. Its defaults differ from the working
+  interactive guide; it is not required for that workflow.
+
+To check the benchmark connection, first start the model using steps 1–2 of the
+Scholar guide. On an **amd64 Linux host** with Docker running, open a MAGE
+checkout and run the following. Enter the current allocated GPU hostname and
+your own Scholar account when prompted:
+
+```bash
+printf 'Scholar username: '
+IFS= read -r SCHOLAR_USER
+printf 'Allocated GPU hostname: '
+IFS= read -r GPU_NODE
+
+bash scripts/eval-host \
+  --model-ssh "${SCHOLAR_USER}@${GPU_NODE}" \
+  --jump "${SCHOLAR_USER}@scholar.rcac.purdue.edu" \
+  --no-remote-start \
+  --setup-only
+```
+
+`--no-remote-start` reuses the server already running on the GPU node, avoiding
+another build or different server settings. The script installs uv/Harbor if
+needed and checks that a Docker container can reach the model. In setup-only
+mode it keeps the tunnel open; press Ctrl+C after the check. Rerun the command
+without `--setup-only` to start grading. The default requests one SWE-bench Pro
+task per condition: OpenCode alone, then OpenCode with `.agents/skills`.
+
+The benchmark repositories are supplied inside Harbor's task environments;
+the Scholar checkout only supplies the model-server helper if you use it.
+The amd64 host's checkout supplies the skills. Copying skills does not itself
+create repository-specific MAGE models. This script is a setup/smoke-test path;
+pin dataset/task IDs and experiment settings before using it for research.
+
+If you prefer the helper to start the server, omit `--no-remote-start` and set
+`--remote-repo` to the absolute path of your MAGE checkout on Scholar. The helper
+uses `$RCAC_SCRATCH/mage-bench` by default and may build llama.cpp there even if
+you already have a build under `~/llama.cpp`.
+
+## Optional: Codex CLI
 
 ```bash
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
@@ -36,73 +95,3 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 source ~/.bashrc
 ```
-
-OpenCode:
-
-Get OpenCode installed on the Spark nodes:
-
-```bash
-npm install -g opencode-ai
-```
-
-If the skills in Opencode do not match what currently in the .agents/skills directory, run:
-
-```bash
-opencode debug skill
-```
-
-Start interactive slurm jobs:
-
-```bash
-sinteractive -A scholar -p spark-interactive \
-  --gres=gpu:1 --cpus-per-task=10 --time=0-2:00:00
-```
-
-One-time install/build for llama:
-
-```bash
-module load modtree/spark
-module load conda cuda cmake
-
-git clone https://github.com/ggml-org/llama.cpp.git
-cmake -S llama.cpp -B llama.cpp/build -DGGML_CUDA=ON -DLLAMA_CURL=ON
-cmake --build llama.cpp/build -j 10
-```
-
-Running a model:
-
-```bash
-module load modtree/spark
-module load cuda
-export HF_HOME="$RCAC_SCRATCH/hf-cache"
-cd ~/llama.cpp
-```
-
-Running Qwen3 (known working):
-
-```bash
-build/bin/llama-cli \
-  -hf Qwen/Qwen3-4B-GGUF:Q4_K_M \
-  -ngl 999 -c 8192 -fa on
-```
-
-Notes:
-
-- Store model downloads in `$RCAC_SCRATCH`.
-- `spark-interactive` is capped at ~60 GB RAM. Use `spark-batch` with `salloc` for larger models.
-- Both Q4 and Q6 downloaded but crashed during CUDA model loading, even in a 100 GB exclusive batch allocation.
-
-Two machines:
-
-- On the Spark GPU node, `bash scripts/scholar-session serve` builds `llama-server` under `$RCAC_SCRATCH/mage-bench`, downloads `Qwen/Qwen3-4B-GGUF:Q4_K_M`, and serves it on `127.0.0.1:8080`. The clone on Scholar exists so that command can be run there. Benchmark repositories are not checked out on Scholar.
-- On an amd64 Linux host, `scripts/eval-host` SSHs to that command, forwards the port, and runs OpenCode plus the benchmark grader in Docker. Those images are linux/amd64, which is why the grader is not on the GB10.
-
-```bash
-bash scripts/eval-host \
-  --model-ssh billin19@scholar-k003 \
-  --jump billin19@scholar.rcac.purdue.edu \
-  --remote-repo ~/dev/mage \
-  --setup-only
-```
-
-Drop `--setup-only` after a container on the amd64 host can call the model. The default then grades one SWE-bench Pro task twice: OpenCode alone, then OpenCode with `.agents/skills`.
