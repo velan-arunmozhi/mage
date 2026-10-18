@@ -23,6 +23,10 @@ the virtual environment even after activation.
 The structural OCL pilot retains its separate environment because of the upstream
 dependency conflict documented in its instructions.
 
+For the working two-terminal OpenCode setup, follow the
+[short Scholar setup guide](docs/scholar-opencode.md). The instructions below
+also cover direct model use and benchmark setup.
+
 The [structural OCL pilot](examples/ocl-structural/README.md) is a runnable first
 example: extract Python imports, represent them with BESSER, and evaluate an OCL
 boundary rule against conforming and violating code fixtures.
