@@ -144,7 +144,7 @@ ensure_harbor() {
 }
 
 ssh_base() {
-  SSH_ARGS=(-o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=4)
+  SSH_ARGS=(-o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=4)
   if [[ -n "${JUMP}" ]]; then
     SSH_ARGS+=(-J "${JUMP}")
   fi
