@@ -31,6 +31,11 @@ The [structural OCL pilot](examples/ocl-structural/README.md) is a runnable firs
 example: extract Python imports, represent them with BESSER, and evaluate an OCL
 boundary rule against conforming and violating code fixtures.
 
+The [structural Alloy pilot](examples/alloy-structural/README.md) asks the same
+boundary question, on the same model and fixtures, through the Alloy Analyzer
+instead — and adds a transitive-closure check the matrix-lookup and OCL
+approaches cannot express without separate graph code.
+
 Codex: 
 
 ```bash
