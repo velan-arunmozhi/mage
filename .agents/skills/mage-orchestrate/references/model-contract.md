@@ -76,17 +76,21 @@ about every installation.
 | Model | Current entrypoint | Coordination adjustment |
 | --- | --- | --- |
 | Structural | [SKILL.md](../../structural/SKILL.md) | Apply its index/slice/manifest contract; share its existing entity IDs. |
-| Behavioral | [SKILL.md](../../behavioral/SKILL.md) | It is an instruction file without YAML skill metadata and tells the reader to reuse an existing cache. Read it explicitly and perform the freshness check above before reuse. |
+| Behavioral | [SKILL.md](../../behavioral/SKILL.md) | Apply its index/slice/manifest contract; share the structural entity IDs it keys on. A slice saved without a manifest entry is `unknown`, not reusable. |
 | Ownership | [SKILL.md](../../ownership/SKILL.md) | Use claim identity and validity; obtain current observations separately; link to behavioral transitions. |
 | Decision | [SKILL.md](../../decision/SKILL.md) | Preserve a declared case domain and default. Outside an established policy's coverage, report unknown policy rather than inventing a verdict. |
 | Measurement | [SKILL.md](../../measurement/SKILL.md) | It is the initial experiment's measurement specification without YAML skill metadata. Read it as a reference; adapt applicable semantics to the actual quantitative question. |
 | Provenance | [SKILL.md](../../provenance/SKILL.md) | Capture consequential history once; carry its cause, actor/run, targets, results, and evidence. |
 
-The behavioral adapter supplies the missing metadata: scope, source anchors/hashes,
-discovery coverage, freshness, claim/authority status, and analysis limits. Separate
-transitions extracted from code from transitions independently declared legal. It is
-useful to model a protocol with defects; extraction does not validate its intent. A
-missing edge forbids a transition only in a declared complete transition relation.
+The behavioral skill now carries its own scope, source anchors and hashes, discovery
+coverage, freshness, claim and authority status, and analysis limits; this coordinator no
+longer supplies them. Two of its distinctions still matter at a join. It is useful to
+model a protocol with defects, so extraction does not validate its intent. A missing edge
+forbids a transition only in a declared complete transition relation.
+
+A per-step check decides one transition and never composes steps, so a behavioral slice
+whose evidence is a snapshot or step-safety result establishes neither reachability nor
+liveness. Do not promote such a result to a claim about an execution.
 
 The measurement adapter retains quantities, units, scope, aggregation, windows,
 denominators, separately sourced references, margin, uncertainty, and explicit missingness.
@@ -103,7 +107,7 @@ Use established project locations first. Defaults from the current model skills 
 | Output | Default |
 | --- | --- |
 | Structural slices and their index/manifest | `.mage/structural/` |
-| Behavioral component lifecycle | `.mage/behavioral/<component_name>.md` |
+| Behavioral lifecycles and their index/manifest | `.mage/behavioral/` |
 | Ownership slice | `.mage/ownership/<scope-id>.md` |
 | Decision slices and their index/manifest | `.mage/decision/` |
 | Consequential history | `.mage/provenance.md` |

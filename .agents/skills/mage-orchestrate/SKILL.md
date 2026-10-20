@@ -68,8 +68,8 @@ Without adequate metadata, mark freshness unknown and inspect the relevant sourc
 Refresh affected facts, preserving authored intent and unrelated content.
 
 Use the [model contract](references/model-contract.md) for handoffs, freshness, and the
-behavioral and measurement adapters. Those adapters are required when using the current
-suite's behavioral or measurement files.
+per-skill adapters. The measurement adapter is required when using the current suite's
+measurement file.
 
 ## 3. Select the models by question
 
