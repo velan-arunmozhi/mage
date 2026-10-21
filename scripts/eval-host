@@ -1,99 +1,127 @@
 #!/usr/bin/env bash
-# Layout 1 entrypoint for an amd64 Linux host (Debian, including WSL).
+# AMD64 entrypoint for Scholar-hosted models and Harbor grading.
 #
-# Scholar only serves the foundation model. This machine runs OpenCode and the
-# benchmark grader inside the official amd64 images, and reaches the model
-# through an SSH local forward.
+# Scholar serves the model. This machine runs OpenCode and Harbor in linux/amd64
+# containers and reaches the model through an SSH local forward.
 #
-#   bash scripts/eval-host \
-#     --model-ssh billin19@scholar-k003 \
-#     --jump billin19@scholar.rcac.purdue.edu \
-#     --remote-repo ~/dev/mage
+# Existing allocation:
+#   bash scripts/eval-host --model-ssh USER@GPU_NODE --no-remote-start \
+#     --model-profile qwen36-35b --context 131072 --condition both --n-tasks 1
 #
-# Add --setup-only to stop after the model is reachable from a container.
-# The default grades one SWE-bench Pro task, baseline then skills.
+# New Spark batch allocation, from a machine that can SSH to a Scholar login node:
+#   bash scripts/eval-host --model-profile qwen36-35b --context 131072 \
+#     --jump USER@scholar.rcac.purdue.edu --partition spark-batch --account scholar \
+#     --gpus 1 --cpus 20 --mem 100G --time 02:00:00 --condition both --n-tasks 1
 #
-# The mage clone on Scholar is the model script (~/dev/mage/scripts/scholar-session).
-# Benchmark repositories are not cloned there. Harbor checks them out inside
-# images on this machine. Skills are read from this clone and copied into
-# those images.
+# Dry run (no GPU, SSH, download, or Harbor job):
+#   bash scripts/eval-host --dry-run --model-profile qwen36-35b --context 131072 \
+#     --partition spark-batch --account scholar --gpus 1 --cpus 20 --mem 100G --time 02:00:00
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILLS="${REPO_ROOT}/.agents/skills"
+# shellcheck source=lib/mage-scholar.sh
+source "${SCRIPT_DIR}/lib/mage-scholar.sh"
 
 MODEL_SSH=""
 JUMP=""
 REMOTE_REPO="~/dev/mage"
-REMOTE_PORT=8080
+REMOTE_SCRATCH=""
+LLAMA_COMMIT_REQUEST=""
 LOCAL_PORT=18080
+REMOTE_PORT_ARG=""
 DATASET="swebenchpro"
 N_TASKS=1
 CONDITION="both"
 SETUP_ONLY=0
 START_REMOTE=1
+NO_SUBMIT=0
 MODEL_URL=""
-
-STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/mage-eval"
+DRY_RUN=0
+ALLOW_NOT_READY=0
+ALLOW_SMOKE_FAILURE=0
+SKIP_CHAT_SMOKE=0
+SKIP_TOOL_SMOKE=0
+KEEP_ALLOCATION=0
+USE_REMOTE_CHECKOUT=0
+STARTUP_TIMEOUT=1800
+ACCOUNT=""
+PARTITION=""
+GPUS=""
+CPUS=""
+MEM=""
+WALL=""
+QOS=""
+COMMAND=""
+TASK_IDS=()
 TUNNEL_PIDS=()
+OWNED_JOB_ID=""
+OWNED_JOB_NAME=""
+CLEANED=0
+STATE_DIR="${MAGE_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/mage-eval}"
+SSH_BASE=(-o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ConnectTimeout=20)
 
 usage() {
   cat <<EOF
-Usage: bash scripts/eval-host --model-ssh USER@GPU_NODE [options]
+Usage: bash scripts/eval-host [run|plan|status|stop] [options]
 
-Required, unless --model-url is set:
-  --model-ssh USER@HOST   GPU node where llama-server is bound to 127.0.0.1
+The model server runs on Scholar. Harbor and OpenCode run on this AMD64 host.
+Choose one allocation mode explicitly:
 
-Options:
-  --jump USER@LOGIN       SSH jump host (repeat by comma is not required; one hop).
-                          Example: billin19@scholar.rcac.purdue.edu
-                          Omit this when your SSH config already reaches the GPU node.
-  --remote-repo PATH      Clone on the GPU node (default: ~/dev/mage). Tilde expands there.
-  --remote-port PORT      llama-server port on the GPU node (default: 8080).
-  --local-port PORT       Local forward port (default: 18080).
-  --dataset NAME          Harbor dataset (default: swebenchpro).
-  --n-tasks N             Tasks per condition (default: 1).
+  --model-ssh USER@GPU_NODE     Use this allocated node. Does not submit a job.
+  --no-remote-start             The selected model is already listening there.
+  --no-submit                   Same refusal to submit. Requires --model-ssh.
+  --account NAME --partition NAME
+                                Submit a Spark batch job. Also pass --gpus,
+                                --cpus, --mem, and --time. From an AMD64 host
+                                pass --jump USER@LOGIN. A login node with sbatch
+                                can omit --jump.
+  --model-url URL               Use an OpenAI-compatible URL and skip SSH.
+
+Model options match scripts/scholar-session. CLI overrides environment, then
+the profile, then the legacy Qwen3-4B / 8192 default. The recommended pilot is
+--model-profile qwen36-35b. qwen30b-diagnostic is refused unless
+--allow-not-ready is set for an investigation.
+
+Other options:
+  --jump USER@LOGIN             Scholar login. Also used as ProxyJump.
+  --remote-repo PATH            Remote checkout, only with --use-remote-checkout.
+  --use-remote-checkout         Run that checkout's scholar-session instead of
+                                uploading this tree's launcher.
+  --remote-scratch PATH         Remote bench root. Otherwise the GPU node
+                                resolves RCAC_SCRATCH itself.
+  --llama-commit SHA            Record this commit in the Harbor fingerprint
+                                and pass it to a new remote llama.cpp clone.
+  --remote-port PORT            Server port. Same as --port.
+  --local-port PORT             Local tunnel port (default 18080).
+  --dataset NAME                Harbor dataset alias (default swebenchpro).
+  --n-tasks N                   Tasks per condition (default 1).
+  --task NAME                   Repeatable task id, forwarded only if this
+                                Harbor accepts an include-task flag.
   --condition both|baseline|mage
-                          both runs OpenCode with and without .agents/skills.
-  --setup-only            Start the model and prove a container can call it. Do not grade.
-  --no-remote-start       Do not SSH a 'scholar-session serve'. The server must already be up.
-  --model-url URL         Use an existing OpenAI-compatible URL and skip SSH.
+  --setup-only                  Verify the model from a container, then wait.
+  --startup-timeout SECONDS     Wait for a batch allocation (default 1800).
+  --keep-allocation             Do not cancel the job this command submitted.
+  --skip-chat-smoke             Do not run the final-answer smoke.
+  --skip-tool-smoke             Do not require the echo tool-call smoke.
+  --allow-smoke-failure         Continue after a failed smoke. Investigation only.
+  --allow-not-ready             Allow qwen30b-diagnostic past the profile gate.
+  --qos NAME
+  --dry-run, plan               Print the resolved config and stop.
   --help
 
-Re-running the same dataset, task count, and condition resumes Harbor's job
-directory. One local model means Harbor concurrency stays at 1.
+baseline is OpenCode alone. mage copies .agents/skills and does not grade
+precomputed repository representations. both runs those two conditions on the
+same model, context, budget, and task selection. Harbor job names include a
+configuration fingerprint, so a different model or context does not resume an
+older job. The same fingerprint can resume.
+
+A two-hour GPU allocation may be too short for a full SWE-bench Pro run.
+Re-running the same configuration resumes Harbor and can use a later allocation.
 EOF
 }
-
-die() {
-  echo "$*" >&2
-  exit 1
-}
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --model-ssh) MODEL_SSH="${2:-}"; shift 2 ;;
-    --jump) JUMP="${2:-}"; shift 2 ;;
-    --remote-repo) REMOTE_REPO="${2:-}"; shift 2 ;;
-    --remote-port) REMOTE_PORT="${2:-}"; shift 2 ;;
-    --local-port) LOCAL_PORT="${2:-}"; shift 2 ;;
-    --dataset) DATASET="${2:-}"; shift 2 ;;
-    --n-tasks) N_TASKS="${2:-}"; shift 2 ;;
-    --condition) CONDITION="${2:-}"; shift 2 ;;
-    --setup-only) SETUP_ONLY=1; shift ;;
-    --no-remote-start) START_REMOTE=0; shift ;;
-    --model-url) MODEL_URL="${2:-}"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) die "Unknown argument: $1" ;;
-  esac
-done
-
-case "${CONDITION}" in
-  both|baseline|mage) ;;
-  *) die "--condition must be both, baseline, or mage" ;;
-esac
 
 cleanup() {
   local pid
@@ -103,19 +131,431 @@ cleanup() {
       wait "${pid}" 2>/dev/null || true
     fi
   done
+  if [[ "$CLEANED" -eq 0 && "$KEEP_ALLOCATION" -eq 0 && -n "$OWNED_JOB_ID" ]]; then
+    CLEANED=1
+    mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "${JUMP}" || true
+  fi
 }
 trap cleanup EXIT
+
+parse_args() {
+  mage_reset_cli
+  while [[ $# -gt 0 ]]; do
+    if mage_take_model_flag "$@"; then
+      shift "$MAGE_SHIFT_N"
+      continue
+    fi
+    case "$1" in
+      run|plan|status|stop|help)
+        [[ -z "$COMMAND" ]] || mage_die "Only one command is allowed."
+        COMMAND="$1"
+        shift
+        ;;
+      -h|--help) COMMAND="help"; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --model-ssh) mage_require_value "$1" "${2:-}"; MODEL_SSH="$2"; shift 2 ;;
+      --jump|--login) mage_require_value "$1" "${2:-}"; JUMP="$2"; shift 2 ;;
+      --remote-repo) mage_require_value "$1" "${2:-}"; REMOTE_REPO="$2"; shift 2 ;;
+      --remote-scratch) mage_require_value "$1" "${2:-}"; REMOTE_SCRATCH="$2"; shift 2 ;;
+      --llama-commit) mage_require_value "$1" "${2:-}"; LLAMA_COMMIT_REQUEST="$2"; shift 2 ;;
+      --remote-port) mage_require_value "$1" "${2:-}"; REMOTE_PORT_ARG="$2"; shift 2 ;;
+      --local-port) mage_require_value "$1" "${2:-}"; LOCAL_PORT="$2"; shift 2 ;;
+      --dataset) mage_require_value "$1" "${2:-}"; DATASET="$2"; shift 2 ;;
+      --n-tasks) mage_require_value "$1" "${2:-}"; N_TASKS="$2"; shift 2 ;;
+      --task) mage_require_value "$1" "${2:-}"; TASK_IDS+=("$2"); shift 2 ;;
+      --condition) mage_require_value "$1" "${2:-}"; CONDITION="$2"; shift 2 ;;
+      --setup-only) SETUP_ONLY=1; shift ;;
+      --no-remote-start) START_REMOTE=0; shift ;;
+      --no-submit) NO_SUBMIT=1; START_REMOTE=0; shift ;;
+      --model-url) mage_require_value "$1" "${2:-}"; MODEL_URL="$2"; shift 2 ;;
+      --account) mage_require_value "$1" "${2:-}"; ACCOUNT="$2"; shift 2 ;;
+      --partition) mage_require_value "$1" "${2:-}"; PARTITION="$2"; shift 2 ;;
+      --gpus) mage_require_value "$1" "${2:-}"; GPUS="$2"; shift 2 ;;
+      --cpus) mage_require_value "$1" "${2:-}"; CPUS="$2"; shift 2 ;;
+      --mem) mage_require_value "$1" "${2:-}"; MEM="$2"; shift 2 ;;
+      --time) mage_require_value "$1" "${2:-}"; WALL="$2"; shift 2 ;;
+      --qos) mage_require_value "$1" "${2:-}"; QOS="$2"; shift 2 ;;
+      --startup-timeout) mage_require_value "$1" "${2:-}"; STARTUP_TIMEOUT="$2"; shift 2 ;;
+      --keep-allocation) KEEP_ALLOCATION=1; shift ;;
+      --allow-not-ready) ALLOW_NOT_READY=1; shift ;;
+      --allow-smoke-failure) ALLOW_SMOKE_FAILURE=1; shift ;;
+      --skip-chat-smoke) SKIP_CHAT_SMOKE=1; shift ;;
+      --skip-tool-smoke) SKIP_TOOL_SMOKE=1; shift ;;
+      --use-remote-checkout) USE_REMOTE_CHECKOUT=1; shift ;;
+      *)
+        usage >&2
+        mage_die "Unknown argument: $1"
+        ;;
+    esac
+  done
+  COMMAND="${COMMAND:-run}"
+  if [[ "$COMMAND" == "plan" ]]; then
+    DRY_RUN=1
+    COMMAND="run"
+  fi
+  if [[ -n "$REMOTE_PORT_ARG" ]]; then
+    if [[ "$CLI_SET_PORT" -eq 1 && "$CLI_PORT" != "$REMOTE_PORT_ARG" ]]; then
+      mage_die "--port ${CLI_PORT} and --remote-port ${REMOTE_PORT_ARG} disagree."
+    fi
+    CLI_PORT="$REMOTE_PORT_ARG"
+    CLI_SET_PORT=1
+  fi
+  case "$CONDITION" in
+    both|baseline|mage) ;;
+    *) mage_die "--condition must be both, baseline, or mage." ;;
+  esac
+  [[ "$N_TASKS" =~ ^[0-9]+$ && "$N_TASKS" -ge 1 ]] || mage_die "--n-tasks must be a positive integer."
+  [[ "$LOCAL_PORT" =~ ^[0-9]+$ ]] || mage_die "--local-port must be an integer."
+  [[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]] || mage_die "--startup-timeout must be an integer."
+}
+
+select_mode() {
+  if [[ -n "$MODEL_URL" && ( -n "$MODEL_SSH" || -n "$ACCOUNT" || -n "$PARTITION" ) ]]; then
+    mage_die "--model-url does not submit or attach to a Scholar allocation."
+  fi
+  if [[ -n "$MODEL_URL" ]]; then
+    MODE="url"
+    START_REMOTE=0
+    return 0
+  fi
+  if [[ -n "$MODEL_SSH" && ( -n "$ACCOUNT" || -n "$PARTITION" ) && "$NO_SUBMIT" -ne 1 ]]; then
+    mage_die "Pass --no-submit with --model-ssh to use an existing allocation, or omit --model-ssh to submit a new job."
+  fi
+  if [[ "$NO_SUBMIT" -eq 1 && -z "$MODEL_SSH" ]]; then
+    mage_die "--no-submit requires --model-ssh for an allocation you already hold."
+  fi
+  if [[ -n "$MODEL_SSH" ]]; then
+    MODE="manual"
+    return 0
+  fi
+  if [[ -n "$ACCOUNT" || -n "$PARTITION" ]]; then
+    [[ -n "$ACCOUNT" && -n "$PARTITION" ]] || mage_die "Batch submission needs both --account and --partition."
+    [[ -n "$GPUS" && -n "$CPUS" && -n "$MEM" && -n "$WALL" ]] || mage_die "Batch submission needs --gpus, --cpus, --mem, and --time. Verified example: --gpus 1 --cpus 20 --mem 100G --time 02:00:00."
+    MODE="batch"
+    return 0
+  fi
+  mage_die "Pass --model-ssh for an existing GPU node, or --account and --partition to submit a Spark batch job."
+}
+
+allocation_warnings() {
+  mage_python - "$MAGE_LIB_DIR" "$ACCOUNT" "$PARTITION" "$GPUS" "$CPUS" "$MEM" "$WALL" "$QOS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import mage_scholar
+cleaned = mage_scholar.validate_allocation({
+    "account": sys.argv[2],
+    "partition": sys.argv[3],
+    "gpus": sys.argv[4],
+    "cpus": sys.argv[5],
+    "mem": sys.argv[6],
+    "time": sys.argv[7],
+    "qos": sys.argv[8],
+    "job_name": "mage-check",
+})
+print("\n".join(cleaned["warnings"]))
+PY
+}
+
+prepare_run_dir() {
+  mkdir -p "${STATE_DIR}/runs"
+  RUN_ID="$(mage_new_run_id)"
+  RUN_DIR="${STATE_DIR}/runs/${RUN_ID}"
+  mkdir -p "$RUN_DIR"
+  RESOLVED="${RUN_DIR}/resolved-config.json"
+  mage_resolve_file "$RESOLVED"
+  mage_load_resolved "$RESOLVED"
+  mage_print_warnings "$RESOLVED"
+  echo "Resolved configuration:"
+  cat "$RESOLVED"
+  echo "Run directory: ${RUN_DIR}"
+  if [[ "$BENCHMARK_READY" != "true" && "$ALLOW_NOT_READY" -ne 1 ]]; then
+    echo "This profile is not benchmark-ready. A real evaluation stops here. Pass --allow-not-ready only for investigation." >&2
+    return 2
+  fi
+  if [[ "$BIND_PUBLIC" == "true" ]]; then
+    mage_die "eval-host does not publish the model server. Keep --bind 127.0.0.1."
+  fi
+}
+
+submit_via() {
+  if [[ -n "$JUMP" ]]; then
+    echo ssh
+  elif command -v "${MAGE_SBATCH:-sbatch}" >/dev/null 2>&1; then
+    echo local
+  else
+    echo needs-jump
+  fi
+}
+
+cmd_status() {
+  local current="${STATE_DIR}/current.json"
+  if [[ ! -f "$current" ]]; then
+    echo "No recorded eval allocation."
+    return 0
+  fi
+  cat "$current"
+  local job_id=""
+  job_id="$(mage_python -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("job_id") or "")' "$current" || true)"
+  if [[ -z "$job_id" ]]; then
+    echo "queue: no job id recorded"
+    return 0
+  fi
+  local job_name jump state=""
+  job_name="$(mage_python -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("job_name") or "")' "$current")"
+  jump="$(mage_python -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("jump") or "")' "$current")"
+  if [[ -n "$jump" ]]; then
+    state="$("${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "$jump" "${MAGE_SQUEUE:-squeue} -j ${job_id} -h -o %T" 2>/dev/null || true)"
+  elif command -v "${MAGE_SQUEUE:-squeue}" >/dev/null 2>&1; then
+    state="$("${MAGE_SQUEUE:-squeue}" -j "$job_id" -h -o "%T" 2>/dev/null || true)"
+  fi
+  echo "queue: ${state:-not-queued}"
+  echo "owned job name: ${job_name}"
+}
+
+cmd_stop() {
+  local current="${STATE_DIR}/current.json"
+  [[ -f "$current" ]] || mage_die "No recorded eval allocation to stop."
+  local job_id job_name owned jump
+  job_id="$(mage_json_get "$current" job_id)"
+  job_name="$(mage_json_get "$current" job_name)"
+  owned="$(mage_json_get "$current" owned)"
+  jump="$(mage_json_get "$current" jump)"
+  [[ "$owned" == "true" ]] || mage_die "The recorded run is not marked owned. Refusing to cancel ${job_id}."
+  [[ -n "$job_id" ]] || mage_die "The recorded run has no SLURM job id."
+  JUMP="$jump"
+  mage_cancel_owned_job "$job_id" "$job_name" "$jump"
+}
+
+ssh_to() {
+  local target="$1"
+  shift
+  local -a jump_args=()
+  if [[ -n "$JUMP" && "$target" != "$JUMP" ]]; then
+    jump_args=(-J "$JUMP")
+  fi
+  "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${jump_args[@]}" "$target" "$@"
+}
+
+scp_to() {
+  local src="$1"
+  local target="$2"
+  local path="$3"
+  "${MAGE_SCP:-scp}" "${SSH_BASE[@]}" "$src" "${target}:${path}"
+}
+
+upload_launcher() {
+  local target="$1"
+  local remote_run="$2"
+  ssh_to "$target" "mkdir -p $(printf '%q' "$remote_run")"
+  tar -C "$REPO_ROOT" -cf - scripts/scholar-session scripts/lib/mage-scholar.sh scripts/lib/mage_scholar.py \
+    | ssh_to "$target" "tar -C $(printf '%q' "$remote_run") -xf - --strip-components=1"
+  scp_to "$RESOLVED" "$target" "${remote_run}/model-config.json"
+}
+
+remote_home() {
+  local target="$1"
+  local -a jump_args=()
+  if [[ -n "$JUMP" && "$target" != "$JUMP" ]]; then
+    jump_args=(-J "$JUMP")
+  fi
+  "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${jump_args[@]}" "$target" bash --noprofile --norc -s <<'EOF'
+if [[ -z ${HOME:-} || ! -d ${HOME:-} ]]; then
+  HOME=$(getent passwd "$(id -un)" | awk -F: '{print $6}')
+  export HOME
+fi
+printf %s "${HOME:-}"
+EOF
+}
+
+start_manual_server() {
+  local home remote_run launcher command
+  home="$(remote_home "$MODEL_SSH")"
+  [[ -n "$home" && "$home" =~ ^/~?/?[A-Za-z0-9_./@+-]+$ || "$home" =~ ^/[A-Za-z0-9_./@+-]+$ ]] || mage_die "Remote HOME is missing or not a plain path: ${home:-empty}"
+  remote_run="${home}/mage-eval-jobs/${RUN_ID}"
+  if [[ "$USE_REMOTE_CHECKOUT" -eq 1 ]]; then
+    launcher="${REMOTE_REPO}/scripts/scholar-session"
+  else
+    upload_launcher "$MODEL_SSH" "$remote_run"
+    launcher="${remote_run}/scholar-session"
+  fi
+  command="$(mage_remote_command "$launcher" "$RESOLVED" "$RUN_ID" "$REMOTE_SCRATCH" "${LLAMA_COMMIT_REQUEST:-}")"
+  echo "Starting ${MODEL_ALIAS} on ${MODEL_SSH}."
+  ssh_to "$MODEL_SSH" "$command"
+}
+
+render_batch() {
+  local remote_run="$1"
+  local launcher="$2"
+  local alloc="${RUN_DIR}/allocation-request.json"
+  mage_python -c 'import json,sys; json.dump({"account":sys.argv[1],"partition":sys.argv[2],"gpus":int(sys.argv[3]),"cpus":int(sys.argv[4]),"mem":sys.argv[5],"time":sys.argv[6],"qos":sys.argv[7],"job_name":sys.argv[8]}, open(sys.argv[9],"w"), indent=2)' \
+    "$ACCOUNT" "$PARTITION" "$GPUS" "$CPUS" "$MEM" "$WALL" "$QOS" "mage-${RUN_ID}" "$alloc"
+  local -a extra=()
+  if [[ -n "$REMOTE_SCRATCH" ]]; then
+    extra+=(--scratch "$REMOTE_SCRATCH")
+  fi
+  if [[ -n "${LLAMA_COMMIT_REQUEST:-}" ]]; then
+    extra+=(--llama-commit "$LLAMA_COMMIT_REQUEST")
+  fi
+  mage_python "$MAGE_PY" sbatch --allocation "$alloc" --run-dir "$remote_run" --run-id "$RUN_ID" --launcher "$launcher" "${extra[@]}" >"${RUN_DIR}/serve.sbatch"
+}
+
+submit_batch() {
+  local via home remote_run launcher job_id
+  via="$(submit_via)"
+  if [[ "$via" == "needs-jump" ]]; then
+    mage_die "This host has no sbatch. Pass --jump USER@scholar-login. Dry-run can show the script without submitting; a real run will not guess a login host."
+  fi
+  if [[ "$via" == "ssh" ]]; then
+    home="$(remote_home "$JUMP")"
+  else
+    mage_ensure_home
+    home="$HOME"
+  fi
+  [[ "$home" =~ ^/[A-Za-z0-9_./@+-]+$ ]] || mage_die "Refusing remote HOME ${home:-empty}."
+  remote_run="${home}/mage-eval-jobs/${RUN_ID}"
+  launcher="${remote_run}/scholar-session"
+  render_batch "$remote_run" "$launcher"
+  OWNED_JOB_NAME="mage-${RUN_ID}"
+  if [[ "$via" == "ssh" ]]; then
+    upload_launcher "$JUMP" "$remote_run"
+    scp_to "${RUN_DIR}/serve.sbatch" "$JUMP" "${remote_run}/serve.sbatch"
+    job_id="$(ssh_to "$JUMP" "sbatch --parsable $(printf '%q' "${remote_run}/serve.sbatch")")"
+  else
+    mkdir -p "$remote_run"
+    cp "${SCRIPT_DIR}/scholar-session" "$remote_run/scholar-session"
+    mkdir -p "$remote_run/lib"
+    cp "${SCRIPT_DIR}/lib/mage-scholar.sh" "${SCRIPT_DIR}/lib/mage_scholar.py" "$remote_run/lib/"
+    cp "$RESOLVED" "$remote_run/model-config.json"
+    cp "${RUN_DIR}/serve.sbatch" "$remote_run/serve.sbatch"
+    job_id="$("${MAGE_SBATCH:-sbatch}" --parsable "$remote_run/serve.sbatch")"
+  fi
+  job_id="${job_id%%;*}"
+  [[ "$job_id" =~ ^[0-9]+$ ]] || mage_die "sbatch did not return a numeric job id: ${job_id:-empty}"
+  OWNED_JOB_ID="$job_id"
+  write_current_state "$remote_run"
+  echo "Submitted owned SLURM job ${OWNED_JOB_ID} (${OWNED_JOB_NAME})."
+  wait_for_host "$via" "$remote_run"
+}
+
+write_current_state() {
+  local remote_run="$1"
+  mkdir -p "$STATE_DIR" "$RUN_DIR"
+  mage_python - "$RUN_ID" "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "$JUMP" "$remote_run" "$MODEL_ALIAS" "$CONTEXT" "${STATE_DIR}/current.json" "${RUN_DIR}/state.json" <<'PY'
+import json, sys
+payload = {
+    "run_id": sys.argv[1],
+    "job_id": sys.argv[2],
+    "job_name": sys.argv[3],
+    "jump": sys.argv[4],
+    "remote_run": sys.argv[5],
+    "model_alias": sys.argv[6],
+    "context": int(sys.argv[7]),
+    "owned": True,
+    "hostname": "",
+}
+text = json.dumps(payload, indent=2) + "\n"
+open(sys.argv[8], "w", encoding="utf-8").write(text)
+open(sys.argv[9], "w", encoding="utf-8").write(text)
+PY
+}
+
+wait_for_host() {
+  local via="$1"
+  local remote_run="$2"
+  local start now state host class target
+  start="$(date +%s)"
+  if [[ "$via" == "ssh" ]]; then
+    target="$JUMP"
+  else
+    target=""
+  fi
+  while true; do
+    if [[ -n "$target" ]]; then
+      state="$(ssh_to "$target" "${MAGE_SQUEUE:-squeue} -j ${OWNED_JOB_ID} -h -o %T" 2>/dev/null || true)"
+      host="$(ssh_to "$target" "cat $(printf '%q' "${remote_run}/hostname")" 2>/dev/null || true)"
+    else
+      state="$("${MAGE_SQUEUE:-squeue}" -j "$OWNED_JOB_ID" -h -o "%T" 2>/dev/null || true)"
+      host="$(cat "${remote_run}/hostname" 2>/dev/null || true)"
+    fi
+    state="${state%%$'\n'*}"
+    host="${host%%$'\n'*}"
+    class="$(mage_slurm_state_class "$state")"
+    if [[ "$class" == "terminal" ]]; then
+      mage_die "SLURM job ${OWNED_JOB_ID} entered ${state} before the model was ready. Logs are under ${remote_run}."
+    fi
+    if [[ -n "$host" ]]; then
+      echo "Allocated node: ${host}"
+      printf '%s\n' "$host" >"${RUN_DIR}/hostname"
+      attach_tunnel_target "$host"
+      return 0
+    fi
+    now="$(date +%s)"
+    if (( now - start >= STARTUP_TIMEOUT )); then
+      mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "$target" || true
+      CLEANED=1
+      mage_die "Timed out after ${STARTUP_TIMEOUT}s waiting for job ${OWNED_JOB_ID} (last state: ${state:-unknown}). The owned job was cancelled."
+    fi
+    echo "Waiting for job ${OWNED_JOB_ID} (${state:-unknown}, $((now - start))s)"
+    sleep "${MAGE_POLL_INTERVAL:-15}"
+  done
+}
+
+attach_tunnel_target() {
+  local host="$1"
+  local user
+  if [[ "$MODEL_SSH" == *@* ]]; then
+    user="${MODEL_SSH%%@*}"
+  elif [[ "$JUMP" == *@* ]]; then
+    user="${JUMP%%@*}"
+  else
+    user="$(id -un)"
+  fi
+  MODEL_SSH="${user}@${host}"
+}
+
+open_tunnel() {
+  local bind="$1"
+  local pid elapsed
+  local -a jump_args=()
+  [[ -n "$MODEL_SSH" ]] || mage_die "Pass --model-ssh USER@GPU_NODE."
+  if [[ -n "$JUMP" && "$MODEL_SSH" != "$JUMP" ]]; then
+    jump_args=(-J "$JUMP")
+  fi
+  echo "Forwarding ${bind}:${LOCAL_PORT} to ${MODEL_SSH} 127.0.0.1:${PORT}" >&2
+  "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${jump_args[@]}" -N \
+    -L "${bind}:${LOCAL_PORT}:127.0.0.1:${PORT}" \
+    "$MODEL_SSH" &
+  pid=$!
+  TUNNEL_PIDS+=("$pid")
+  if [[ "$bind" != "127.0.0.1" ]]; then
+    sleep 1
+    kill -0 "$pid" 2>/dev/null
+    return
+  fi
+  elapsed=0
+  while (( elapsed < 30 )); do
+    if curl -sf "http://127.0.0.1:${LOCAL_PORT}/v1/models" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
 
 require_amd64() {
   local arch
   arch="$(uname -m)"
-  [[ "${arch}" == "x86_64" ]] || die "This host is ${arch}. SWE-bench Pro and FeatureBench images are linux/amd64. Run this script on the Debian WSL machine, not on Scholar."
+  [[ "$arch" == "x86_64" ]] || mage_die "This host is ${arch}. SWE-bench Pro images are linux/amd64. Run eval-host on the AMD64 machine, not on Scholar."
 }
 
 require_docker() {
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     cat <<EOF >&2
-Docker is not usable on this host. The grader and the agent both run inside the benchmark images, so a container runtime is required. Parallelism is a separate Harbor flag and stays at 1 while a single model server is the bottleneck.
+Docker is not usable on this host. Harbor grades inside linux/amd64 images.
 
 On Debian or WSL, install Docker Engine and open a new shell so this user can run docker:
   https://docs.docker.com/engine/install/debian/
@@ -129,165 +569,278 @@ ensure_harbor() {
   export PATH="${HOME}/.local/bin:${PATH}"
   if command -v harbor >/dev/null 2>&1 && harbor run --help >/dev/null 2>&1; then
     echo "Harbor: $(harbor --version 2>/dev/null || echo present)"
-    return
+    return 0
   fi
   if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv"
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="${HOME}/.local/bin:${PATH}"
   fi
-  command -v uv >/dev/null 2>&1 || die "uv is not on PATH after install."
+  command -v uv >/dev/null 2>&1 || mage_die "uv is not on PATH after install."
   echo "Installing Harbor"
   uv tool install harbor
-  command -v harbor >/dev/null 2>&1 || die "harbor is not on PATH after uv tool install."
-  harbor run --help >/dev/null 2>&1 || die "The harbor command does not look like Harbor Framework. Check 'uv tool install harbor'."
+  command -v harbor >/dev/null 2>&1 || mage_die "harbor is not on PATH after uv tool install."
+  harbor run --help >/dev/null 2>&1 || mage_die "The harbor command does not look like Harbor Framework."
 }
 
-ssh_base() {
-  SSH_ARGS=(-o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=4)
-  if [[ -n "${JUMP}" ]]; then
-    SSH_ARGS+=(-J "${JUMP}")
-  fi
-}
-
-start_remote_model() {
-  [[ -n "${MODEL_SSH}" ]] || die "Pass --model-ssh USER@GPU_NODE."
-  ssh_base
-  echo "Starting the model on ${MODEL_SSH} via ${REMOTE_REPO}/scripts/scholar-session serve"
-  echo "The first remote run compiles llama.cpp and downloads weights. Later runs reuse scratch."
-  ssh "${SSH_ARGS[@]}" "${MODEL_SSH}" \
-    "bash -lc 'bash ${REMOTE_REPO}/scripts/scholar-session serve'"
-}
-
-open_tunnel() {
-  local bind="$1"
-  local pid elapsed
-  [[ -n "${MODEL_SSH}" ]] || die "Pass --model-ssh USER@GPU_NODE."
-  ssh_base
-  mkdir -p "${STATE_DIR}"
-  echo "Forwarding ${bind}:${LOCAL_PORT} to ${MODEL_SSH} 127.0.0.1:${REMOTE_PORT}" >&2
-  ssh -N "${SSH_ARGS[@]}" \
-    -L "${bind}:${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT}" \
-    "${MODEL_SSH}" &
-  pid=$!
-  TUNNEL_PIDS+=("${pid}")
-  if [[ "${bind}" != "127.0.0.1" ]]; then
-    sleep 1
-    kill -0 "${pid}" 2>/dev/null
-    return
-  fi
-  elapsed=0
-  while (( elapsed < 30 )); do
-    if curl -sf "http://127.0.0.1:${LOCAL_PORT}/v1/models" >/dev/null 2>&1; then
-      return 0
+probe_dataset() {
+  local listfile version=""
+  listfile="${RUN_DIR}/harbor-dataset-list.txt"
+  if command -v harbor >/dev/null 2>&1; then
+    version="$(harbor --version 2>&1 || true)"
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 30 harbor dataset list >"$listfile" 2>&1 || timeout 30 harbor datasets list >"$listfile" 2>&1 || true
+    else
+      harbor dataset list >"$listfile" 2>&1 || harbor datasets list >"$listfile" 2>&1 || true
     fi
-    if ! kill -0 "${pid}" 2>/dev/null; then
-      return 1
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  return 1
-}
-
-model_id_from() {
-  local url="$1"
-  curl -sf "${url}" | python3 -c 'import json,sys; data=json.load(sys.stdin); rows=data.get("data") or []; print(rows[0].get("id","") if rows else "")'
+  else
+    printf '%s\n' "harbor not on PATH" >"$listfile"
+  fi
+  mage_python "$MAGE_PY" classify-dataset --dataset "$DATASET" --version "$version" --list-file "$listfile" >"${RUN_DIR}/dataset.json"
+  DATASET_IDENTITY="$(mage_json_get "${RUN_DIR}/dataset.json" identity)"
+  echo "Dataset ${DATASET} identity token: ${DATASET_IDENTITY}. SWE-bench Pro release remains unverified. See ${RUN_DIR}/dataset.json"
 }
 
 docker_gateway() {
   docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true
 }
 
-container_reaches() {
-  local url="$1"
-  docker run --rm --add-host=host.docker.internal:host-gateway \
-    curlimages/curl:8.5.0 -sf "${url}/models" >/dev/null 2>&1
+prove_container() {
+  local url="http://host.docker.internal:${LOCAL_PORT}/v1"
+  echo "Checking that a container can reach ${url}" >&2
+  if docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:8.5.0 -sf "${url}/models" >"${RUN_DIR}/container-models.json" 2>/dev/null; then
+    printf '%s' "$url"
+    return 0
+  fi
+  local gateway
+  gateway="$(docker_gateway)"
+  [[ -n "$gateway" ]] || mage_die "A container could not reach host.docker.internal:${LOCAL_PORT}, and Docker reported no bridge gateway."
+  echo "Forwarding on the Docker bridge ${gateway} as well." >&2
+  open_tunnel "$gateway" || mage_die "Could not bind the SSH forward on ${gateway}:${LOCAL_PORT}."
+  url="http://${gateway}:${LOCAL_PORT}/v1"
+  docker run --rm curlimages/curl:8.5.0 -sf "${url}/models" >"${RUN_DIR}/container-models.json" || mage_die "A container could not reach the model at ${url}."
+  printf '%s' "$url"
 }
 
-prove_container_can_call_model() {
-  local gateway url
-  url="http://host.docker.internal:${LOCAL_PORT}/v1"
-  echo "Checking that a container can reach ${url}" >&2
-  if container_reaches "${url}"; then
-    echo "${url}"
-    return
+gate_model() {
+  local base="$1"
+  mkdir -p "${RUN_DIR}/load"
+  if ! mage_verify_endpoint "$base" "${RUN_DIR}/load"; then
+    echo "The server at ${base} does not match ${MODEL_ALIAS} with context ${CONTEXT}." >&2
+    [[ -f "${RUN_DIR}/load/load-verdict.json" ]] && cat "${RUN_DIR}/load/load-verdict.json" >&2
+    exit 1
   fi
-  gateway="$(docker_gateway)"
-  [[ -n "${gateway}" ]] || die "A container could not reach host.docker.internal:${LOCAL_PORT}, and Docker reported no bridge gateway."
-  echo "host.docker.internal was not enough. Forwarding on the Docker bridge ${gateway} as well." >&2
-  open_tunnel "${gateway}" || die "Could not bind the SSH forward on ${gateway}:${LOCAL_PORT}."
-  url="http://${gateway}:${LOCAL_PORT}/v1"
-  container_reaches "${url}" || die "A container could not reach the model at ${url}."
-  echo "${url}"
+  echo "Loaded model matches ${MODEL_ALIAS} at context ${CONTEXT}."
+  if [[ "$SKIP_CHAT_SMOKE" -eq 1 ]]; then
+    echo "Chat smoke skipped. Load verification is not a correctness result."
+  else
+    if mage_smoke_chat "$base" "${RUN_DIR}/smoke-chat"; then
+      echo "Chat smoke passed."
+    else
+      echo "Chat smoke failed. See ${RUN_DIR}/smoke-chat/verdict.json" >&2
+      if [[ "$ALLOW_SMOKE_FAILURE" -ne 1 ]]; then
+        exit 1
+      fi
+      echo "Continuing because --allow-smoke-failure was set."
+    fi
+  fi
+  if [[ "$SKIP_TOOL_SMOKE" -eq 1 ]]; then
+    echo "Tool smoke skipped. A chat reply does not prove OpenCode tool use."
+  else
+    if mage_smoke_tool "$base" "${RUN_DIR}/smoke-tool"; then
+      echo "Tool smoke passed."
+    else
+      echo "Tool smoke failed. The tool argument was not executed. See ${RUN_DIR}/smoke-tool." >&2
+      if [[ "$ALLOW_SMOKE_FAILURE" -ne 1 ]]; then
+        exit 1
+      fi
+      echo "Continuing because --allow-smoke-failure was set."
+    fi
+  fi
 }
 
 run_condition() {
   local name="$1"
   local base_url="$2"
-  local model="$3"
-  shift 3
-  local job="mage-${DATASET}-${name}-n${N_TASKS}"
+  local finger="${RUN_DIR}/fingerprint-${name}.json"
+  local -a finger_args=(
+    fingerprint --resolved "$RESOLVED" --dataset "$DATASET"
+    --dataset-identity "${DATASET_IDENTITY}" --n-tasks "$N_TASKS"
+    --condition "$name" --llama-commit "${LLAMA_COMMIT:-unspecified}"
+  )
+  local task
+  if [[ "${#TASK_IDS[@]}" -gt 0 ]]; then
+    for task in "${TASK_IDS[@]}"; do
+      finger_args+=(--task-id "$task")
+    done
+  fi
+  mage_python "$MAGE_PY" "${finger_args[@]}" >"$finger"
+  local job config_line
+  job="$(mage_json_get "$finger" job_name)"
+  config_line="$(mage_python "$MAGE_PY" opencode --resolved "$RESOLVED" --base-url "$base_url" | mage_python -c 'import json,sys; print(json.dumps(json.load(sys.stdin),separators=(",",":")))')"
+  printf '%s\n' "$config_line" >"${RUN_DIR}/opencode-${name}.json"
+  local -a extra=()
+  if [[ "$name" == "mage" ]]; then
+    [[ -d "$SKILLS" ]] || mage_die "Missing skills directory: ${SKILLS}"
+    extra+=(--skill "$SKILLS")
+  fi
+  local -a jobs_dir=()
+  local -a task_args=()
+  local help
+  help="$(harbor run --help 2>&1 || true)"
+  if grep -q -- '--jobs-dir' <<< "$help"; then
+    jobs_dir=(--jobs-dir "${RUN_DIR}/harbor-jobs")
+  fi
+  if [[ "${#TASK_IDS[@]}" -gt 0 ]]; then
+    if grep -q -- 'include-task' <<< "$help"; then
+      for task in "${TASK_IDS[@]}"; do
+        task_args+=(--include-task-name "$task")
+      done
+    else
+      mage_die "This Harbor has no include-task flag, so --task was not forwarded. Refusing to grade a different task set."
+    fi
+  fi
   echo
-  echo "Harbor job ${job}  agent=opencode  model=${model}  tasks=${N_TASKS}"
+  echo "Harbor job ${job}"
+  echo "agent=opencode model=scholar/${MODEL_ALIAS} tasks=${N_TASKS} condition=${name}"
   harbor run \
-    --dataset "${DATASET}" \
+    --dataset "$DATASET" \
     --agent opencode \
-    --model "${model}" \
-    --n-tasks "${N_TASKS}" \
+    --model "scholar/${MODEL_ALIAS}" \
+    --n-tasks "$N_TASKS" \
     --n-concurrent 1 \
-    --job-name "${job}" \
+    --job-name "$job" \
     --ae "OPENAI_BASE_URL=${base_url}" \
     --ae "OPENAI_API_KEY=local" \
-    "$@"
+    --ae "OPENCODE_CONFIG_CONTENT=${config_line}" \
+    "${jobs_dir[@]}" \
+    "${task_args[@]}" \
+    "${extra[@]}"
+}
+
+cmd_run() {
+  local ready=0
+  prepare_run_dir || ready=$?
+  if [[ "$ready" -ne 0 ]]; then
+    return "$ready"
+  fi
+  select_mode
+  LLAMA_COMMIT="${MAGE_LLAMA_COMMIT:-unspecified}"
+  if [[ -n "${LLAMA_COMMIT_REQUEST:-}" ]]; then
+    LLAMA_COMMIT="$LLAMA_COMMIT_REQUEST"
+  fi
+  if [[ "$MODE" == "batch" ]]; then
+    allocation_warnings
+    local via
+    via="$(submit_via)"
+    local placeholder="/remote/mage-eval-jobs/${RUN_ID}"
+    render_batch "$placeholder" "${placeholder}/scholar-session"
+    echo "Batch submit path: ${via}"
+    if [[ "$via" == "needs-jump" ]]; then
+      echo "A real run on this host needs --jump USER@scholar-login. No job was submitted."
+    fi
+    echo "Batch script:"
+    cat "${RUN_DIR}/serve.sbatch"
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    local name preview
+    for name in baseline mage; do
+      if [[ "$CONDITION" != "both" && "$CONDITION" != "$name" ]]; then
+        continue
+      fi
+      preview="${RUN_DIR}/fingerprint-${name}.json"
+      local -a preview_args=(
+        fingerprint --resolved "$RESOLVED" --dataset "$DATASET"
+        --dataset-identity unverified --n-tasks "$N_TASKS"
+        --condition "$name" --llama-commit "$LLAMA_COMMIT"
+      )
+      if [[ "${#TASK_IDS[@]}" -gt 0 ]]; then
+        local task
+        for task in "${TASK_IDS[@]}"; do
+          preview_args+=(--task-id "$task")
+        done
+      fi
+      mage_python "$MAGE_PY" "${preview_args[@]}" >"$preview"
+      echo "Harbor job (${name}): $(mage_json_get "$preview" job_name)"
+    done
+    echo "Dataset release is unverified until a live run probes Harbor. V1, V2, and HARD-51 scores stay separate."
+    echo "Dry run: no sbatch, ssh, docker, model download, or Harbor job was started."
+    return 0
+  fi
+  require_amd64
+  command -v curl >/dev/null 2>&1 || mage_die "curl is required."
+  command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || mage_die "python3 is required."
+  local base
+  if [[ "$MODE" == "url" ]]; then
+    base="${MODEL_URL%/}"
+    base="${base%/v1}"
+  else
+    command -v ssh >/dev/null 2>&1 || mage_die "ssh is required."
+    if [[ "$MODE" == "batch" ]]; then
+      submit_batch
+    elif [[ "$START_REMOTE" -eq 1 ]]; then
+      start_manual_server
+    fi
+    open_tunnel "127.0.0.1" || mage_die "SSH forward exited before the model responded on port ${PORT}."
+    base="http://127.0.0.1:${LOCAL_PORT}"
+    {
+      echo "model_ssh=${MODEL_SSH}"
+      echo "jump=${JUMP}"
+      echo "local_port=${LOCAL_PORT}"
+      echo "remote_port=${PORT}"
+    } >"${RUN_DIR}/tunnel.txt"
+  fi
+  gate_model "$base"
+  if [[ "$SETUP_ONLY" -eq 1 && "$MODE" != "url" ]]; then
+    require_docker
+    local container_url
+    container_url="$(prove_container)"
+    echo "Container base URL: ${container_url}"
+    echo "Setup complete. Interrupt this process to close the tunnel."
+    if [[ ${#TUNNEL_PIDS[@]} -gt 0 ]]; then
+      wait "${TUNNEL_PIDS[@]}"
+    fi
+    return 0
+  fi
+  require_docker
+  ensure_harbor
+  probe_dataset
+  local container_url
+  if [[ "$MODE" == "url" ]]; then
+    container_url="${base}/v1"
+  else
+    container_url="$(prove_container)"
+  fi
+  echo "Agent base URL: ${container_url}"
+  if [[ "$CONDITION" == "baseline" || "$CONDITION" == "both" ]]; then
+    run_condition baseline "$container_url"
+  fi
+  if [[ "$CONDITION" == "mage" || "$CONDITION" == "both" ]]; then
+    run_condition mage "$container_url"
+  fi
+  if [[ -d "${RUN_DIR}/harbor-jobs" ]]; then
+    mage_python "$MAGE_PY" summarize-harbor --root "${RUN_DIR}/harbor-jobs" >"${RUN_DIR}/summary.json"
+  else
+    printf '%s\n' '{"note":"Harbor did not write a jobs directory in this run folder. A single task is not an aggregate SWE-bench Pro score."}' >"${RUN_DIR}/summary.json"
+  fi
+  echo "Run artifacts: ${RUN_DIR}"
+  if [[ -n "$OWNED_JOB_ID" && "$KEEP_ALLOCATION" -eq 0 ]]; then
+    mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "$JUMP" || true
+    CLEANED=1
+  fi
 }
 
 main() {
-  require_amd64
-  require_docker
-  command -v curl >/dev/null 2>&1 || die "curl is required."
-  command -v python3 >/dev/null 2>&1 || die "python3 is required."
-  command -v ssh >/dev/null 2>&1 || die "ssh is required."
-  ensure_harbor
-
-  local models_url base_url model_id
-  if [[ -n "${MODEL_URL}" ]]; then
-    models_url="${MODEL_URL%/}/models"
-    base_url="${MODEL_URL%/}"
-    START_REMOTE=0
-  else
-    if [[ "${START_REMOTE}" -eq 1 ]]; then
-      start_remote_model
-    fi
-    open_tunnel "127.0.0.1" || die "SSH forward exited before the model responded. Is scholar-session serve still running on the GPU node?"
-    models_url="http://127.0.0.1:${LOCAL_PORT}/v1/models"
-    base_url="$(prove_container_can_call_model)"
-  fi
-
-  model_id="$(model_id_from "${models_url}")"
-  [[ -n "${model_id}" ]] || die "The model server returned no model id from ${models_url}"
-  echo "Model id: ${model_id}"
-  echo "Agent base URL: ${base_url}"
-
-  if [[ "${SETUP_ONLY}" -eq 1 ]]; then
-    echo "Setup complete. Re-run without --setup-only to grade."
-    # Keep the tunnel alive until the user stops the script when they asked
-    # only for setup, so they can curl the model themselves.
-    if [[ ${#TUNNEL_PIDS[@]} -gt 0 ]]; then
-      echo "Tunnel stays open until you interrupt this process."
-      wait "${TUNNEL_PIDS[@]}"
-    fi
-    return
-  fi
-
-  local harbor_model="openai/${model_id}"
-  if [[ "${CONDITION}" == "baseline" || "${CONDITION}" == "both" ]]; then
-    run_condition baseline "${base_url}" "${harbor_model}"
-  fi
-  if [[ "${CONDITION}" == "mage" || "${CONDITION}" == "both" ]]; then
-    [[ -d "${SKILLS}" ]] || die "Missing skills directory: ${SKILLS}"
-    run_condition mage "${base_url}" "${harbor_model}" --skill "${SKILLS}"
-  fi
+  parse_args "$@"
+  case "$COMMAND" in
+    help) usage ;;
+    status) cmd_status ;;
+    stop) cmd_stop ;;
+    run) cmd_run ;;
+    *) mage_die "Unknown command: ${COMMAND}" ;;
+  esac
 }
 
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

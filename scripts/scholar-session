@@ -1,187 +1,397 @@
 #!/usr/bin/env bash
-# One entrypoint for a Purdue Scholar Spark session.
+# Start, inspect, or stop a localhost llama-server on a Scholar GPU allocation.
 #
-#   bash scripts/scholar-session
+#   bash scripts/scholar-session plan --model-profile qwen36-35b
+#   bash scripts/scholar-session serve --model-profile coder-14b
 #
-# Brings up llama-server for the known-good Qwen3-4B weights on $RCAC_SCRATCH,
-# then stops before benchmark grading. scholar-k003 is aarch64, Apptainer is
-# installed, and /proc/sys/fs/binfmt_misc/qemu-x86_64 is absent, so linux/amd64
-# images (SWE-bench Pro, FeatureBench) cannot run here.
-#
-# Subcommands: session (default), serve, status, stop, help
-#
-# Override any MAGE_* or MODEL_* variable in the environment before running.
+# Grading stays on an AMD64 host. See docs/scholar-opencode.md.
 
 set -euo pipefail
 
-PORT="${MAGE_PORT:-8080}"
-MODEL_HF="${MAGE_MODEL_HF:-Qwen/Qwen3-4B-GGUF:Q4_K_M}"
-CONTEXT="${MAGE_CONTEXT:-8192}"
-HOST_BIND="${MAGE_BIND:-127.0.0.1}"
-WAIT_SECS="${MAGE_SERVER_WAIT_SECS:-2700}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/mage-scholar.sh
+source "${SCRIPT_DIR}/lib/mage-scholar.sh"
 
-if [[ -z "${RCAC_SCRATCH:-}" ]]; then
-  echo "RCAC_SCRATCH is unset. Run this on a Scholar node, where that variable points at your scratch quota." >&2
-  exit 1
-fi
-
-ROOT="${MAGE_SCRATCH:-${RCAC_SCRATCH}/mage-bench}"
-export HF_HOME="${HF_HOME:-${ROOT}/hf-cache}"
-LLAMA_SRC="${MAGE_LLAMA_SRC:-${ROOT}/llama.cpp}"
-PIDFILE="${ROOT}/llama-server.pid"
-LOGFILE="${ROOT}/llama-server.log"
-MODELS_URL="http://${HOST_BIND}:${PORT}/v1/models"
+DRY_RUN=0
+FOREGROUND=0
+DO_SMOKE=0
+DO_TOOL_SMOKE=0
+ALLOW_PUBLIC=0
+ALLOW_LLAMA_UPDATE=0
+LLAMA_COMMIT_REQUEST=""
+COMMAND=""
+STARTED_PID=""
+SERVE_READY=0
 
 usage() {
   cat <<EOF
-Usage: bash scripts/scholar-session [session|serve|status|stop|help]
+Usage: bash scripts/scholar-session [command] [options]
 
-  session   Build llama-server if needed, start it, then run the eval gate (default).
-  serve     Build and start the model server, then print how to call it.
-  status    Print whether the server is up and which model id it is serving.
-  stop      Stop the server started by this script.
+Commands:
+  session   Resolve the config, start llama-server, then run the eval gate (default).
+  serve     Start llama-server and return when the loaded alias and context match.
+  plan      Print the resolved config and llama-server argv. No GPU, download, or build.
+  smoke     Run the correctness smoke against an already listening server.
+  status    Report the owned server. A stale pid from another allocation is not "serving".
+  stop      Stop the owned server. Refuses a pid whose command, host, or SLURM job differs.
+  help      Show this text.
+
+Model options (CLI overrides environment, which overrides the profile, which overrides the legacy default):
+  --model-profile NAME     smoke-4b, coder-14b, qwen36-35b, or qwen30b-diagnostic
+  --model-hf REPO:QUANT    Hugging Face GGUF reference passed to -hf
+  --model-file PATH        Local GGUF passed to -m
+  --model-alias NAME       OpenAI-compatible id passed to --alias
+  --context N              Per-slot context passed to -c
+  --gpu-layers N           Passed to -ngl
+  --flash-attn on|off|auto
+  --parallel N             Passed to -np. Default 1. -c is per slot.
+  --port N                 Default 8080
+  --bind ADDRESS           Default 127.0.0.1. Other addresses need --allow-public-bind.
+  --cuda-managed on|off|auto
+                           auto sets GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 only on GB10.
+  --output-limit N         Recorded client budget. Must be smaller than context.
+  --smoke-max-tokens N     Smoke completion budget. Must be smaller than context.
+  --reasoning preserve     Recording only. This script does not disable thinking.
+  --temperature NUMBER     Passed to --temp only when set.
+  --llama-arg ARG          Extra llama-server argument, recorded and appended. Repeatable.
+  --config FILE            Input below environment and above the profile.
+  --resolved-config FILE   Authoritative config. Environment does not override it.
 
 Paths:
-  scratch root   ${ROOT}
-  weights cache  ${HF_HOME}
-  llama.cpp      ${LLAMA_SRC}
-  log            ${LOGFILE}
+  --scratch PATH           Bench root. Default: \$RCAC_SCRATCH/mage-bench
+  --llama-src PATH         Existing or new llama.cpp checkout
+  --llama-bin PATH         Use this llama-server instead of building
+  --llama-commit SHA       New clones default to ${MAGE_VERIFIED_LLAMA_COMMIT}.
+                           An existing checkout is not moved unless --allow-llama-update.
+  --allow-llama-update     Build a separate tree for a requested commit.
+  --foreground             Keep this process alive while llama-server runs.
+  --smoke                  After load verification, require a non-repetitive final answer.
+  --tool-smoke             Also require an echo tool call. The argument is not executed.
+  --allow-public-bind      Permit a non-loopback bind.
+  --dry-run                Same as plan.
 
-The first run compiles llama.cpp and downloads ${MODEL_HF}. Later runs reuse both.
-The server is bound to ${HOST_BIND}:${PORT} and lives only as long as this machine
-session does. Run the same command again after a new allocation.
+The legacy default remains Qwen3-4B Q4_K_M at 8192 context. The recommended
+evaluation pilot is --model-profile qwen36-35b. qwen30b-diagnostic can be
+served for investigation and is not benchmark-ready.
+
+A new clone is pinned to llama.cpp ${MAGE_VERIFIED_LLAMA_COMMIT}. The build
+does not pass LLAMA_CURL; that option is ignored by this llama.cpp line and
+HTTPS uses OpenSSL. Weights stay under HF_HOME (\$RCAC_SCRATCH/hf-cache when
+scratch is available).
 EOF
 }
 
-die() {
-  echo "$*" >&2
-  exit 1
-}
-
-ensure_dirs() {
-  mkdir -p "${ROOT}" "${HF_HOME}" "${ROOT}/tmp"
-  export TMPDIR="${ROOT}/tmp"
-}
-
-load_modules() {
-  if ! type module >/dev/null 2>&1; then
-    local candidate
-    for candidate in /etc/profile.d/modules.sh /usr/share/lmod/lmod/init/bash /usr/share/Modules/init/bash; do
-      if [[ -f "${candidate}" ]]; then
-        # shellcheck disable=SC1090
-        source "${candidate}"
-        break
-      fi
-    done
+on_interrupt() {
+  if [[ -n "$STARTED_PID" && ( "$FOREGROUND" -eq 1 || "$SERVE_READY" -ne 1 ) ]]; then
+    mage_signal "$STARTED_PID" || true
   fi
-  type module >/dev/null 2>&1 || die "The module command is not available. Start a Scholar shell and run this script there."
-  module load modtree/spark
-  module load conda cuda cmake
-  command -v cmake >/dev/null 2>&1 || die "cmake is not on PATH after 'module load cuda cmake'."
-  command -v nvcc >/dev/null 2>&1 || die "nvcc is not on PATH after 'module load cuda'."
+  exit 130
+}
+trap on_interrupt INT TERM
+
+mage_ensure_llama_tree() {
+  local src="$1"
+  local requested="${2:-}"
+  if [[ -d "${src}/.git" && -n "$requested" ]]; then
+    local head
+    head="$(git -C "$src" rev-parse HEAD)"
+    if [[ "$head" != "$requested"* ]]; then
+      if [[ "$ALLOW_LLAMA_UPDATE" -ne 1 ]]; then
+        mage_die "llama.cpp at ${src} is ${head}, not ${requested}. Refusing to change that checkout. Pass --allow-llama-update to build an isolated tree at ${src}-${requested}."
+      fi
+      src="${src}-${requested}"
+    fi
+  fi
+  if [[ -d "${src}/.git" ]]; then
+    printf '%s' "$src"
+    return 0
+  fi
+  if [[ -e "$src" ]]; then
+    mage_die "Refusing to clone llama.cpp into existing non-git path ${src}."
+  fi
+  local commit="${requested:-$MAGE_VERIFIED_LLAMA_COMMIT}"
+  echo "Cloning llama.cpp ${commit} into ${src}" >&2
+  mkdir -p "$(dirname "$src")"
+  git init "$src"
+  git -C "$src" remote add origin https://github.com/ggml-org/llama.cpp.git
+  git -C "$src" fetch --depth 1 origin "$commit"
+  git -C "$src" checkout --detach FETCH_HEAD
+  printf '%s' "$src"
 }
 
-require_gpu() {
-  command -v nvidia-smi >/dev/null 2>&1 || die "nvidia-smi is not on PATH."
-  nvidia-smi -L >/dev/null 2>&1 || die "No GPU is visible. From a Scholar login node request one with: sinteractive -A scholar -p spark-interactive --gres=gpu:1 --cpus-per-task=10 --time=0-2:00:00"
+mage_build_llama() {
+  if [[ -n "${MAGE_LLAMA_BIN:-}" ]]; then
+    [[ -x "${MAGE_LLAMA_BIN}" ]] || mage_die "llama binary is not executable: ${MAGE_LLAMA_BIN}"
+    printf '%s' "${MAGE_LLAMA_BIN}"
+    return 0
+  fi
+  local src bin jobs
+  src="$(mage_ensure_llama_tree "$LLAMA_SRC" "$LLAMA_COMMIT_REQUEST")"
+  LLAMA_SRC="$src"
+  bin="${src}/build/bin/llama-server"
+  if [[ -x "$bin" ]]; then
+    printf '%s' "$bin"
+    return 0
+  fi
+  command -v cmake >/dev/null 2>&1 || mage_die "cmake is not on PATH. The module environment did not provide it, and the CUDA library fallback does not install cmake. Log: ${LOGFILE}"
+  jobs="${SLURM_CPUS_PER_TASK:-}"
+  if [[ -z "$jobs" ]]; then
+    jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  fi
+  echo "Building llama-server with ${jobs} jobs from ${src}"
+  echo "LLAMA_CURL is not passed. Current llama.cpp ignores that option and uses OpenSSL for HTTPS."
+  cmake -S "$src" -B "${src}/build" -DGGML_CUDA=ON
+  cmake --build "${src}/build" -j "$jobs" --target llama-server
+  [[ -x "$bin" ]] || mage_die "Build finished without ${bin}. See ${LOGFILE}."
+  printf '%s' "$bin"
 }
 
-server_pid() {
-  if [[ -f "${PIDFILE}" ]]; then
-    local pid
-    pid="$(cat "${PIDFILE}")"
-    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-      echo "${pid}"
+print_resolved() {
+  local file="$1"
+  echo "Resolved configuration:"
+  cat "$file"
+  mage_print_warnings "$file"
+  local argv_file
+  argv_file="$(mktemp)"
+  mage_server_argv_file "$file" "${MAGE_LLAMA_BIN:-llama-server}" "$argv_file"
+  echo "llama-server argv:"
+  mage_python -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1],encoding="utf-8"))["argv"]))' "$argv_file"
+  rm -f "$argv_file"
+}
+
+refuse_public_bind() {
+  if [[ "$BIND_PUBLIC" == "true" && "$ALLOW_PUBLIC" -ne 1 ]]; then
+    mage_die "Refusing to bind llama-server to ${BIND}. The default is 127.0.0.1. Pass --allow-public-bind only when exposure is intentional."
+  fi
+}
+
+server_base() {
+  printf 'http://%s:%s' "$BIND" "$PORT"
+}
+
+cmd_plan() {
+  local dest
+  dest="$(mktemp)"
+  mage_resolve_file "$dest"
+  print_resolved "$dest"
+  echo "Dry run: no allocation, download, build, or server launch."
+  rm -f "$dest"
+}
+
+launch_owned_server() {
+  local bin="$1"
+  local -a argv=()
+  local part
+  while IFS= read -r -d '' part; do
+    argv+=("$part")
+  done < <(mage_python "$MAGE_PY" argv --resolved "$MAGE_RESOLVED_FILE" --binary "$bin" --print0)
+  if [[ "${#argv[@]}" -lt 8 ]]; then
+    mage_die "Refusing to launch an incomplete llama-server command."
+  fi
+  {
+    echo "cuda_init=${MAGE_CUDA_INIT:-unknown}"
+    echo "cuda_note=${MAGE_CUDA_INIT_NOTE:-}"
+    echo "GGML_CUDA_ENABLE_UNIFIED_MEMORY=${GGML_CUDA_ENABLE_UNIFIED_MEMORY:-unset}"
+    echo "reason=${MAGE_CUDA_MANAGED_REASON:-}"
+    printf 'argv:'
+    printf ' %q' "${argv[@]}"
+    echo
+  } >>"${LOGFILE}"
+  if [[ "$FOREGROUND" -eq 1 ]]; then
+    "${argv[@]}" >>"${LOGFILE}" 2>&1 &
+  else
+    nohup "${argv[@]}" >>"${LOGFILE}" 2>&1 &
+  fi
+  STARTED_PID=$!
+  mage_write_pid "$PIDFILE" "$STARTED_PID"
+}
+
+wait_until_loaded() {
+  local base elapsed
+  base="$(server_base)"
+  elapsed=0
+  local limit="${MAGE_SERVER_WAIT_SECS:-2700}"
+  while (( elapsed < limit )); do
+    if mage_verify_endpoint "$base" "${RUN_DIR}/load" >/dev/null 2>&1; then
+      SERVE_READY=1
+      echo "Model ${MODEL_ALIAS} is serving ${CONTEXT} context at ${base}."
+      echo "Load verification is not a correctness test. Run smoke or scripts/eval-host before a benchmark."
+      echo "Log: ${LOGFILE}"
       return 0
     fi
-  fi
-  return 1
-}
-
-models_json() {
-  curl -sf "${MODELS_URL}"
-}
-
-server_healthy() {
-  models_json >/dev/null 2>&1
-}
-
-model_id() {
-  models_json | python3 -c 'import json,sys; data=json.load(sys.stdin); rows=data.get("data") or []; print(rows[0].get("id","") if rows else "")'
-}
-
-print_client_hint() {
-  local id
-  id="$(model_id || true)"
-  echo "Model server: ${MODELS_URL}"
-  if [[ -n "${id}" ]]; then
-    echo "Model id: ${id}"
-    echo "OpenCode, from a checkout on this machine:"
-    echo "  OPENAI_API_KEY=local OPENAI_BASE_URL=http://${HOST_BIND}:${PORT}/v1 opencode run --model openai/${id} \"Summarize this repository\""
-  fi
-  echo "Log: ${LOGFILE}"
-}
-
-build_llama() {
-  local bin="${LLAMA_SRC}/build/bin/llama-server"
-  if [[ -x "${bin}" ]]; then
-    echo "llama-server already built: ${bin}"
-    return
-  fi
-  load_modules
-  if [[ ! -d "${LLAMA_SRC}/.git" ]]; then
-    echo "Cloning llama.cpp into ${LLAMA_SRC}"
-    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "${LLAMA_SRC}"
-  fi
-  local jobs="${SLURM_CPUS_PER_TASK:-10}"
-  echo "Building llama-server with ${jobs} jobs"
-  cmake -S "${LLAMA_SRC}" -B "${LLAMA_SRC}/build" -DGGML_CUDA=ON -DLLAMA_CURL=ON
-  cmake --build "${LLAMA_SRC}/build" -j "${jobs}" --target llama-server
-  [[ -x "${bin}" ]] || die "Build finished without ${bin}"
-}
-
-start_server() {
-  local bin="${LLAMA_SRC}/build/bin/llama-server"
-  [[ -x "${bin}" ]] || die "Missing ${bin}"
-  if server_healthy; then
-    echo "Model server is already accepting requests."
-    print_client_hint
-    return
-  fi
-  if server_pid >/dev/null; then
-    echo "llama-server pid $(server_pid) is still starting. Waiting."
-  else
-    load_modules
-    echo "Starting llama-server. Weights download and GPU load are logged to ${LOGFILE}"
-    nohup "${bin}" \
-      -hf "${MODEL_HF}" \
-      -ngl 999 \
-      -c "${CONTEXT}" \
-      -fa on \
-      --host "${HOST_BIND}" \
-      --port "${PORT}" \
-      >>"${LOGFILE}" 2>&1 &
-    echo $! >"${PIDFILE}"
-  fi
-  local elapsed=0
-  while (( elapsed < WAIT_SECS )); do
-    if server_healthy; then
-      echo "Model server is up."
-      print_client_hint
-      return
-    fi
-    if ! server_pid >/dev/null; then
-      echo "llama-server exited. Last log lines:" >&2
+    if [[ -n "$STARTED_PID" ]] && ! kill -0 "$STARTED_PID" 2>/dev/null; then
+      echo "llama-server exited. Last log lines from ${LOGFILE}:" >&2
       tail -n 40 "${LOGFILE}" >&2 || true
       exit 1
     fi
     if (( elapsed % 30 == 0 )); then
-      echo "Waiting for ${MODELS_URL} (${elapsed}s)"
+      echo "Waiting for ${MODEL_ALIAS} at ${base}/v1/models (${elapsed}s)"
     fi
     sleep 5
     elapsed=$((elapsed + 5))
   done
-  die "Model server did not become ready within ${WAIT_SECS}s. See ${LOGFILE}"
+  mage_die "Model server did not become ready within ${limit}s. See ${LOGFILE}."
+}
+
+stop_owned_if_alive() {
+  mage_pid_state "$PIDFILE" >/dev/null
+  if [[ "$MAGE_PID_STATE" == "alive" ]]; then
+    mage_stop_pidfile "$PIDFILE" || true
+    STARTED_PID=""
+  fi
+}
+
+cmd_serve() {
+  local resolved_tmp
+  resolved_tmp="$(mktemp)"
+  mage_resolve_file "$resolved_tmp"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    print_resolved "$resolved_tmp"
+    echo "Dry run: no allocation, download, build, or server launch."
+    rm -f "$resolved_tmp"
+    return 0
+  fi
+  mage_prepare_roots
+  cp "$resolved_tmp" "${RUN_DIR}/resolved-config.json"
+  rm -f "$resolved_tmp"
+  MAGE_RESOLVED_FILE="${RUN_DIR}/resolved-config.json"
+  mage_load_resolved "$MAGE_RESOLVED_FILE"
+  print_resolved "$MAGE_RESOLVED_FILE"
+  refuse_public_bind
+  if [[ "$BENCHMARK_READY" != "true" ]]; then
+    echo "Profile ${PROFILE_NAME:-custom} is not benchmark-ready. serve will still start it for investigation." >&2
+  fi
+  mage_require_gpu
+  mage_configure_cuda
+  mage_apply_managed_memory "$CUDA_MANAGED"
+  local bin
+  bin="$(mage_build_llama)"
+  MAGE_LLAMA_BIN_RESOLVED="$bin"
+  printf '%s\n' "$bin" >"${RUN_DIR}/llama-bin.txt"
+  if [[ -d "${LLAMA_SRC}/.git" ]]; then
+    git -C "$LLAMA_SRC" rev-parse HEAD >"${RUN_DIR}/llama-commit.txt" || true
+  fi
+  mage_check_binary_libs "$bin"
+  mage_check_llama_help "$bin"
+  mage_write_environment "${RUN_DIR}/environment.txt" "$bin"
+  local base
+  base="$(server_base)"
+  if mage_verify_endpoint "$base" "${RUN_DIR}/load" >/dev/null 2>&1; then
+    echo "A server on ${base} already matches ${MODEL_ALIAS} at context ${CONTEXT}."
+    SERVE_READY=1
+  else
+    if mage_curl_json "${base}/v1/models" "${RUN_DIR}/foreign-models.json" >/dev/null 2>&1; then
+      mage_pid_state "$PIDFILE" >/dev/null
+      if [[ "$MAGE_PID_STATE" == "alive" ]]; then
+        echo "Owned server on ${base} does not match ${MODEL_ALIAS}/${CONTEXT}. Restarting it."
+        stop_owned_if_alive
+        sleep 1
+      else
+        mage_die "Port ${PORT} is serving a different model and this launcher does not own that process. Refusing to kill it. See ${RUN_DIR}/foreign-models.json."
+      fi
+    fi
+    launch_owned_server "$bin"
+    wait_until_loaded
+  fi
+  if [[ "$DO_SMOKE" -eq 1 ]]; then
+    if ! mage_smoke_chat "$base" "${RUN_DIR}/smoke-chat"; then
+      echo "Chat smoke failed. Verdict: ${RUN_DIR}/smoke-chat/verdict.json" >&2
+      stop_owned_if_alive
+      exit 1
+    fi
+    echo "Chat smoke passed."
+  fi
+  if [[ "$DO_TOOL_SMOKE" -eq 1 ]]; then
+    if ! mage_smoke_tool "$base" "${RUN_DIR}/smoke-tool"; then
+      echo "Tool smoke failed. The echo argument was not executed. See ${RUN_DIR}/smoke-tool." >&2
+      stop_owned_if_alive
+      exit 1
+    fi
+    echo "Tool smoke passed."
+  fi
+  if [[ "$FOREGROUND" -eq 1 && -n "$STARTED_PID" ]]; then
+    echo "Foreground server pid ${STARTED_PID}. This process exits when the server exits."
+    wait "$STARTED_PID"
+  fi
+}
+
+cmd_smoke() {
+  mage_prepare_roots
+  local resolved_tmp
+  resolved_tmp="$(mktemp)"
+  mage_resolve_file "$resolved_tmp"
+  cp "$resolved_tmp" "${RUN_DIR}/resolved-config.json"
+  rm -f "$resolved_tmp"
+  MAGE_RESOLVED_FILE="${RUN_DIR}/resolved-config.json"
+  mage_load_resolved "$MAGE_RESOLVED_FILE"
+  local base
+  base="$(server_base)"
+  mage_verify_endpoint "$base" "${RUN_DIR}/load" || mage_die "Server at ${base} does not match ${MODEL_ALIAS} context ${CONTEXT}. See ${RUN_DIR}/load/load-verdict.json."
+  mage_smoke_chat "$base" "${RUN_DIR}/smoke-chat" || mage_die "Chat smoke failed. See ${RUN_DIR}/smoke-chat/verdict.json."
+  if [[ "$DO_TOOL_SMOKE" -eq 1 ]]; then
+    mage_smoke_tool "$base" "${RUN_DIR}/smoke-tool" || mage_die "Tool smoke failed. See ${RUN_DIR}/smoke-tool."
+  fi
+  echo "Smoke passed for ${MODEL_ALIAS}."
+}
+
+locate_root() {
+  if [[ -n "${MAGE_RUN_DIR:-}" && -d "${MAGE_RUN_DIR}" ]]; then
+    ROOT="$(cd "$(dirname "${MAGE_RUN_DIR}")/.." && pwd)"
+    RUN_DIR="${MAGE_RUN_DIR}"
+    PIDFILE="${RUN_DIR}/llama-server.pid"
+    LOGFILE="${RUN_DIR}/llama-server.log"
+    return 0
+  fi
+  if [[ -n "${MAGE_SCRATCH:-}" ]]; then
+    ROOT="${MAGE_SCRATCH}"
+  elif [[ -n "${RCAC_SCRATCH:-}" && -d "${RCAC_SCRATCH}" ]]; then
+    ROOT="${RCAC_SCRATCH}/mage-bench"
+  else
+    return 1
+  fi
+  [[ -f "${ROOT}/current-run" ]] || return 1
+  RUN_ID="$(<"${ROOT}/current-run")"
+  RUN_DIR="${ROOT}/runs/${RUN_ID}"
+  PIDFILE="${RUN_DIR}/llama-server.pid"
+  LOGFILE="${RUN_DIR}/llama-server.log"
+}
+
+cmd_status() {
+  if ! locate_root; then
+    echo "stopped"
+    echo "No scratch root or current run was found."
+    exit 1
+  fi
+  mage_pid_state "$PIDFILE" >/dev/null
+  case "$MAGE_PID_STATE" in
+    alive)
+      echo "serving"
+      echo "pid ${MAGE_PID_VALUE}"
+      echo "log ${LOGFILE}"
+      if [[ -f "${RUN_DIR}/resolved-config.json" ]]; then
+        echo "alias $(mage_json_get "${RUN_DIR}/resolved-config.json" model_alias)"
+        echo "context $(mage_json_get "${RUN_DIR}/resolved-config.json" context)"
+      fi
+      ;;
+    stale)
+      echo "stale"
+      echo "${MAGE_PID_DETAIL}"
+      exit 1
+      ;;
+    dead)
+      echo "stopped"
+      echo "log ${LOGFILE}"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_stop() {
+  if ! locate_root; then
+    echo "No owned llama-server state was found."
+    return 0
+  fi
+  mage_stop_pidfile "$PIDFILE"
 }
 
 eval_gate() {
@@ -193,79 +403,80 @@ eval_gate() {
   echo "  host arch: ${arch}"
   echo "  apptainer: $(command -v apptainer || echo missing)"
   echo "  docker:    $(command -v docker || echo missing)"
-  if [[ -e "${qemu}" ]]; then
+  if [[ -e "$qemu" ]]; then
     echo "  qemu:      ${qemu}"
-    echo "QEMU is present. This script does not launch Harbor from that state yet."
-    echo "Install Harbor on this node and run one SWE-bench Pro trial only after confirming an amd64 image starts under Apptainer."
+    echo "QEMU is present. This script does not launch Harbor from that state."
     return 0
   fi
   echo "  qemu:      absent"
   cat <<EOF
 
 Benchmark grading does not run on this node.
-SWE-bench Pro and FeatureBench ship linux/amd64 images. This host is ${arch}
-with Apptainer $(apptainer version 2>/dev/null | head -n 1 || echo unknown) and no qemu-x86_64 binfmt entry.
-Docker is not installed. Harbor's released runner cannot execute those images here.
-
-The model server is left running. Grading belongs on an amd64 machine.
-Re-running this script on the next Scholar allocation starts the server again
-from the scratch cache and hits this same gate.
+SWE-bench Pro images used by Harbor are linux/amd64. This host is ${arch}.
+The model server is left running. Grade from an AMD64 machine with scripts/eval-host.
+Home and scratch survive the next allocation. This process, its shell variables,
+and the SLURM job do not.
 EOF
   return 2
 }
 
-cmd_serve() {
-  ensure_dirs
-  require_gpu
-  build_llama
-  start_server
-}
-
-cmd_status() {
-  ensure_dirs
-  if server_healthy; then
-    echo "serving"
-    print_client_hint
-    exit 0
-  fi
-  if server_pid >/dev/null; then
-    echo "starting pid $(server_pid)"
-    echo "Log: ${LOGFILE}"
-    exit 0
-  fi
-  echo "stopped"
-  exit 1
-}
-
-cmd_stop() {
-  local pid
-  if pid="$(server_pid)"; then
-    kill "${pid}"
-    echo "Stopped llama-server pid ${pid}"
-    rm -f "${PIDFILE}"
-    return
-  fi
-  echo "No llama-server pid from this script is running."
-}
-
-cmd_session() {
-  cmd_serve
-  eval_gate
+parse_args() {
+  mage_reset_cli
+  while [[ $# -gt 0 ]]; do
+    if mage_take_model_flag "$@"; then
+      shift "$MAGE_SHIFT_N"
+      continue
+    fi
+    case "$1" in
+      session|serve|status|stop|plan|smoke|help)
+        [[ -z "$COMMAND" ]] || mage_die "Only one command is allowed."
+        COMMAND="$1"
+        shift
+        ;;
+      -h|--help)
+        COMMAND="help"
+        shift
+        ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --foreground) FOREGROUND=1; shift ;;
+      --smoke) DO_SMOKE=1; shift ;;
+      --tool-smoke) DO_TOOL_SMOKE=1; shift ;;
+      --allow-public-bind) ALLOW_PUBLIC=1; shift ;;
+      --allow-llama-update) ALLOW_LLAMA_UPDATE=1; shift ;;
+      --llama-bin) mage_require_value "$1" "${2:-}"; MAGE_LLAMA_BIN="$2"; shift 2 ;;
+      --llama-src) mage_require_value "$1" "${2:-}"; MAGE_LLAMA_SRC="$2"; shift 2 ;;
+      --llama-commit) mage_require_value "$1" "${2:-}"; LLAMA_COMMIT_REQUEST="$2"; shift 2 ;;
+      --scratch) mage_require_value "$1" "${2:-}"; MAGE_SCRATCH="$2"; shift 2 ;;
+      *)
+        usage >&2
+        mage_die "Unknown argument: $1"
+        ;;
+    esac
+  done
+  COMMAND="${COMMAND:-session}"
 }
 
 main() {
-  local cmd="${1:-session}"
-  case "${cmd}" in
-    session) cmd_session ;;
+  parse_args "$@"
+  case "$COMMAND" in
+    help) usage ;;
+    plan) cmd_plan ;;
     serve) cmd_serve ;;
+    smoke) cmd_smoke ;;
     status) cmd_status ;;
     stop) cmd_stop ;;
-    help|-h|--help) usage ;;
-    *)
-      usage >&2
-      die "Unknown command: ${cmd}"
+    session)
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        cmd_plan
+        return 0
+      fi
+      cmd_serve
+      eval_gate
       ;;
+    *) mage_die "Unknown command: ${COMMAND}" ;;
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
