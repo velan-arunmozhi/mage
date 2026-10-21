@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -220,6 +221,35 @@ class SmokeTests(unittest.TestCase):
             {},
         )
         self.assertTrue(matched["ok"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_path = root / "models.json"
+            slots_path = root / "slots.json"
+            props_path = root / "props.json"
+            models_path.write_text(json.dumps(models), encoding="utf-8")
+            slots_path.write_text(json.dumps([{"id": 0, "n_ctx": 131072}]), encoding="utf-8")
+            props_path.write_text("{}", encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(mage_scholar.__file__)),
+                    "judge-models",
+                    "--alias",
+                    "qwen36-35b",
+                    "--context",
+                    "131072",
+                    "--models",
+                    str(models_path),
+                    "--slots",
+                    str(slots_path),
+                    "--props",
+                    str(props_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(json.loads(proc.stdout)["ok"])
         wrong = mage_scholar.judge_loaded_model(
             "qwen3-4b",
             8192,

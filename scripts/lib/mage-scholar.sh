@@ -6,7 +6,8 @@ if [[ -z "${MAGE_LIB_DIR:-}" ]]; then
   MAGE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 MAGE_PY="${MAGE_PY:-${MAGE_LIB_DIR}/mage_scholar.py}"
-MAGE_VERIFIED_LLAMA_COMMIT="${MAGE_VERIFIED_LLAMA_COMMIT:-31288c9}"
+# Full object id. git fetch does not accept this as a 7-character prefix.
+MAGE_VERIFIED_LLAMA_COMMIT="${MAGE_VERIFIED_LLAMA_COMMIT:-31288c9c66e59377f7788d920678a565bb89dd37}"
 MAGE_VERIFIED_CUDA_ROOT="${MAGE_VERIFIED_CUDA_ROOT:-/apps/spack/scholar-dgx/apps/cuda/13.1.1-none-none-hfb3k4d}"
 
 mage_die() {
@@ -305,6 +306,8 @@ mage_try_modules() {
     fi
     for candidate in "${candidates[@]}"; do
       if [[ -f "$candidate" ]]; then
+        # Lmod reads FPATH. Under set -u an unset FPATH aborts the source.
+        FPATH="${FPATH:-}"
         # shellcheck disable=SC1090
         source "$candidate" || true
         break
@@ -691,7 +694,10 @@ mage_verify_endpoint() {
   if ! mage_curl_json "${base}/props" "$props"; then
     printf '%s\n' '{}' >"$props"
   fi
-  mage_python "$MAGE_PY" judge-models --alias "$MODEL_ALIAS" --context "$CONTEXT" --models "$models" --slots "$slots" --props "$props" >"$verdict"
+  if ! mage_python "$MAGE_PY" judge-models --alias "$MODEL_ALIAS" --context "$CONTEXT" --models "$models" --slots "$slots" --props "$props" >"$verdict"; then
+    return 1
+  fi
+  [[ -s "$verdict" ]] || return 1
   [[ "$(mage_json_get "$verdict" ok)" == "true" ]]
 }
 

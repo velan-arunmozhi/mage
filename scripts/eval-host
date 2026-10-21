@@ -500,22 +500,37 @@ wait_for_host() {
   done
 }
 
+mage_ssh_user() {
+  local spec="$1"
+  local user
+  if [[ "$spec" == *@* ]]; then
+    printf '%s' "${spec%%@*}"
+    return 0
+  fi
+  if [[ -n "$spec" ]]; then
+    user="$("${MAGE_SSH:-ssh}" -G "$spec" 2>/dev/null | awk '$1 == "user" { print $2; exit }')" || true
+    if [[ -n "$user" ]]; then
+      printf '%s' "$user"
+      return 0
+    fi
+  fi
+  id -un
+}
+
 attach_tunnel_target() {
   local host="$1"
   local user
   if [[ "$MODEL_SSH" == *@* ]]; then
     user="${MODEL_SSH%%@*}"
-  elif [[ "$JUMP" == *@* ]]; then
-    user="${JUMP%%@*}"
   else
-    user="$(id -un)"
+    user="$(mage_ssh_user "$JUMP")"
   fi
   MODEL_SSH="${user}@${host}"
 }
 
 open_tunnel() {
   local bind="$1"
-  local pid elapsed
+  local pid elapsed limit state class
   local -a jump_args=()
   [[ -n "$MODEL_SSH" ]] || mage_die "Pass --model-ssh USER@GPU_NODE."
   if [[ -n "$JUMP" && "$MODEL_SSH" != "$JUMP" ]]; then
@@ -532,17 +547,37 @@ open_tunnel() {
     kill -0 "$pid" 2>/dev/null
     return
   fi
+  # The hostname file appears before llama-server is listening. A 30s curl
+  # window cancelled the allocation while the model was still starting.
+  limit="${STARTUP_TIMEOUT:-1800}"
+  echo "Waiting up to ${limit}s for the model on 127.0.0.1:${LOCAL_PORT}." >&2
   elapsed=0
-  while (( elapsed < 30 )); do
-    if curl -sf "http://127.0.0.1:${LOCAL_PORT}/v1/models" >/dev/null 2>&1; then
+  while (( elapsed < limit )); do
+    if curl -sf --max-time 2 "http://127.0.0.1:${LOCAL_PORT}/v1/models" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
+      echo "SSH forward to ${MODEL_SSH} exited before the model responded." >&2
       return 1
+    fi
+    if (( elapsed > 0 && elapsed % 30 == 0 )); then
+      if [[ -n "${OWNED_JOB_ID:-}" && -n "${JUMP:-}" ]]; then
+        state="$(ssh_to "$JUMP" "${MAGE_SQUEUE:-squeue} -j ${OWNED_JOB_ID} -h -o %T" 2>/dev/null || true)"
+        state="${state%%$'\n'*}"
+        class="$(mage_slurm_state_class "$state")"
+        if [[ "$class" == "terminal" ]]; then
+          echo "SLURM job ${OWNED_JOB_ID} is ${state} before the model responded." >&2
+          return 1
+        fi
+        echo "Waiting for the model (${elapsed}s, job ${OWNED_JOB_ID} ${state:-unknown})." >&2
+      else
+        echo "Waiting for the model (${elapsed}s)." >&2
+      fi
     fi
     sleep 1
     elapsed=$((elapsed + 1))
   done
+  echo "Model did not respond on 127.0.0.1:${LOCAL_PORT} within ${limit}s." >&2
   return 1
 }
 
@@ -770,6 +805,7 @@ cmd_run() {
   require_amd64
   command -v curl >/dev/null 2>&1 || mage_die "curl is required."
   command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || mage_die "python3 is required."
+  require_docker
   local base
   if [[ "$MODE" == "url" ]]; then
     base="${MODEL_URL%/}"

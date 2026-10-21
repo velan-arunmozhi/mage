@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 CONTRACT_VERSION = 1
-VERIFIED_LLAMA_COMMIT = "31288c9"
+VERIFIED_LLAMA_COMMIT = "31288c9c66e59377f7788d920678a565bb89dd37"
 VERIFIED_CUDA_ROOT = (
     "/apps/spack/scholar-dgx/apps/cuda/13.1.1-none-none-hfb3k4d"
 )
@@ -217,11 +217,15 @@ def _pick(
     return default, "default"
 
 
-def _load_json(path: str) -> dict[str, Any]:
+def _load_json_value(path: str) -> Any:
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ConfigError(f"Could not read config {path}: {exc}") from exc
+        raise ConfigError(f"Could not read JSON {path}: {exc}") from exc
+
+
+def _load_json(path: str) -> dict[str, Any]:
+    data = _load_json_value(path)
     if not isinstance(data, dict):
         raise ConfigError(f"Config {path} must be a JSON object.")
     return data
@@ -1181,7 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "judge-chat":
             sys.stdout.write(dump(judge_chat(_load_json(args.response))))
         elif args.cmd == "judge-models":
-            slots = _load_json(args.slots) if args.slots else None
+            slots = _load_json_value(args.slots) if args.slots else None
             props = _load_json(args.props) if args.props else None
             sys.stdout.write(
                 dump(

@@ -89,33 +89,52 @@ on_interrupt() {
 }
 trap on_interrupt INT TERM
 
+mage_llama_tree_ready() {
+  local src="$1"
+  [[ -f "${src}/CMakeLists.txt" && -d "${src}/.git" ]]
+}
+
 mage_ensure_llama_tree() {
   local src="$1"
   local requested="${2:-}"
+  # Command substitutions disable set -e, and git init prints the repo path on
+  # stdout. Callers capture this function, so git must stay on stderr and every
+  # failure must exit the function's own subshell.
+  if ! mage_llama_tree_ready "$src" && [[ -z "${MAGE_LLAMA_SRC:-}" && -n "${HOME:-}" ]] && mage_llama_tree_ready "${HOME}/llama.cpp"; then
+    echo "Using existing llama.cpp checkout at ${HOME}/llama.cpp" >&2
+    src="${HOME}/llama.cpp"
+  fi
   if [[ -d "${src}/.git" && -n "$requested" ]]; then
     local head
-    head="$(git -C "$src" rev-parse HEAD)"
-    if [[ "$head" != "$requested"* ]]; then
+    if ! head="$(git -C "$src" rev-parse HEAD 2>/dev/null)"; then
+      mage_die "llama.cpp at ${src} has no commit. Refusing to reuse it."
+    fi
+    if [[ "$head" != "$requested"* && "$requested" != "$head"* ]]; then
       if [[ "$ALLOW_LLAMA_UPDATE" -ne 1 ]]; then
         mage_die "llama.cpp at ${src} is ${head}, not ${requested}. Refusing to change that checkout. Pass --allow-llama-update to build an isolated tree at ${src}-${requested}."
       fi
       src="${src}-${requested}"
     fi
   fi
-  if [[ -d "${src}/.git" ]]; then
+  if mage_llama_tree_ready "$src"; then
     printf '%s' "$src"
     return 0
   fi
   if [[ -e "$src" ]]; then
-    mage_die "Refusing to clone llama.cpp into existing non-git path ${src}."
+    mage_die "Refusing to clone llama.cpp into existing path ${src}. Remove that incomplete checkout or pass --llama-src."
   fi
   local commit="${requested:-$MAGE_VERIFIED_LLAMA_COMMIT}"
   echo "Cloning llama.cpp ${commit} into ${src}" >&2
   mkdir -p "$(dirname "$src")"
-  git init "$src"
-  git -C "$src" remote add origin https://github.com/ggml-org/llama.cpp.git
-  git -C "$src" fetch --depth 1 origin "$commit"
-  git -C "$src" checkout --detach FETCH_HEAD
+  git init "$src" >&2 || mage_die "git init failed for ${src}."
+  git -C "$src" remote add origin https://github.com/ggml-org/llama.cpp.git >&2 || mage_die "Could not set the llama.cpp origin."
+  if ! git -C "$src" fetch --depth 1 origin "$commit" >&2; then
+    mage_die "Could not fetch llama.cpp commit ${commit}. A short id is not a remote ref; use the full commit."
+  fi
+  git -C "$src" checkout --detach FETCH_HEAD >&2 || mage_die "Could not check out llama.cpp ${commit}."
+  if ! mage_llama_tree_ready "$src"; then
+    mage_die "llama.cpp checkout ${src} has no CMakeLists.txt after ${commit}."
+  fi
   printf '%s' "$src"
 }
 
@@ -126,7 +145,7 @@ mage_build_llama() {
     return 0
   fi
   local src bin jobs
-  src="$(mage_ensure_llama_tree "$LLAMA_SRC" "$LLAMA_COMMIT_REQUEST")"
+  src="$(mage_ensure_llama_tree "$LLAMA_SRC" "$LLAMA_COMMIT_REQUEST")" || exit 1
   LLAMA_SRC="$src"
   bin="${src}/build/bin/llama-server"
   if [[ -x "$bin" ]]; then
@@ -265,7 +284,7 @@ cmd_serve() {
   mage_configure_cuda
   mage_apply_managed_memory "$CUDA_MANAGED"
   local bin
-  bin="$(mage_build_llama)"
+  bin="$(mage_build_llama)" || exit 1
   MAGE_LLAMA_BIN_RESOLVED="$bin"
   printf '%s\n' "$bin" >"${RUN_DIR}/llama-bin.txt"
   if [[ -d "${LLAMA_SRC}/.git" ]]; then

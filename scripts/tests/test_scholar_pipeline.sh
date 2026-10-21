@@ -371,4 +371,62 @@ chmod +x "${tmp}/ssh-ready"
   [[ "$MODEL_SSH" == "user@scholar-k060" ]]
 )
 
+cat >"${tmp}/ssh-config-user" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "-G" && "$2" == "scholar" ]]; then
+  printf '%s\n' "user billin19"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "${tmp}/ssh-config-user"
+(
+  # shellcheck source=../eval-host
+  source "$EVAL"
+  JUMP="scholar"
+  MODEL_SSH=""
+  MAGE_SSH="${tmp}/ssh-config-user"
+  attach_tunnel_target "scholar-k060.rcac.purdue.edu"
+  [[ "$MODEL_SSH" == "billin19@scholar-k060.rcac.purdue.edu" ]]
+)
+
+mkdir -p "${tmp}/home/llama.cpp/.git" "${tmp}/bin" "${tmp}/nohome"
+printf '%s\n' "cmake_minimum_required(VERSION 3.16)" >"${tmp}/home/llama.cpp/CMakeLists.txt"
+(
+  # shellcheck source=../scholar-session
+  source "$SESSION"
+  HOME="${tmp}/home"
+  unset MAGE_LLAMA_SRC
+  got="$(mage_ensure_llama_tree "${tmp}/missing/llama.cpp" "")" || fail "existing checkout was not reused"
+  [[ "$got" == "${tmp}/home/llama.cpp" ]] || fail "reused checkout path: ${got}"
+)
+
+cat >"${tmp}/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "init" ]]; then
+  printf 'Initialized empty Git repository in %s/.git/\n' "$2"
+  mkdir -p "$2/.git"
+  exit 0
+fi
+if [[ "$1" == "-C" && "$3" == "fetch" ]]; then
+  echo "fatal: couldn't find remote ref" >&2
+  exit 128
+fi
+exit 0
+EOF
+chmod +x "${tmp}/bin/git"
+(
+  # shellcheck source=../scholar-session
+  source "$SESSION"
+  HOME="${tmp}/nohome"
+  unset MAGE_LLAMA_SRC
+  export PATH="${tmp}/bin:${PATH}"
+  set +e
+  got="$(mage_ensure_llama_tree "${tmp}/fresh/llama.cpp" "31288c9")"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "failed fetch returned a path: ${got}"
+  [[ "$got" != *Initialized* ]] || fail "git init stdout leaked into the llama path: ${got}"
+)
+
 echo "scholar pipeline tests passed"
