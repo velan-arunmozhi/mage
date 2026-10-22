@@ -192,9 +192,27 @@ bash scripts/eval-host \
 
 Omit `--no-remote-start` to have the AMD64 host upload this tree's `scripts/scholar-session` and `scripts/lib`, then start the server. `--use-remote-checkout` runs `REMOTE_REPO/scripts/scholar-session` instead. The resolved config is passed as base64. The remote shell is `bash --noprofile --norc`, and the model string is not interpolated into the shell command. The default local tunnel port is 18080. `--remote-port` is an alias of `--port`; if both are set and they differ, the command exits.
 
-`eval-host status` with no recorded run prints a message and does not SSH. `eval-host stop` cancels only the owned job id and name. `--keep-allocation` leaves that job running. A startup timeout defaults to 1800 seconds and then cancels the owned job.
+`eval-host status` with no recorded run prints a message and does not SSH. `eval-host stop` cancels only the owned job id and name. `--keep-allocation` leaves that job running. A startup timeout defaults to 1800 seconds and then cancels the owned job. A `SIGTERM` or `SIGINT` also runs that cleanup, so a setup-only process can be stopped without leaving the owned SLURM job.
 
 OpenCode receives `OPENCODE_CONFIG_CONTENT` built from the resolved alias, context, and output limit, plus `OPENAI_BASE_URL` and `OPENAI_API_KEY=local`. Harbor's model id is `scholar/<alias>`.
+
+## Grid
+
+`scripts/eval-host` stays the server lifecycle: allocate, tunnel, smoke, and `--setup-only`. `scripts/eval-grid` reads `scripts/eval-grid.json` and starts that setup-only server once per cell. While the server is up it runs Harbor baseline, then mage. `parallel` on the cell is llama.cpp `-np` and Harbor `--n-concurrent`. A cell that splits those two numbers is rejected. This llama.cpp build divides `-c` by `-np`, so the launcher passes `context × parallel` as `-c` and each slot receives the cell's context.
+
+```bash
+bash scripts/eval-grid --dry-run
+bash scripts/eval-grid --stage probe
+bash scripts/eval-grid --stage confirm
+```
+
+`--dry-run` prints the commands and does not submit, SSH, or start Harbor. The default stage is `probe` (one task per condition). `--stage confirm` is twelve tasks. Probe does not continue into confirm on its own.
+
+After the model loads, the grid reads cgroup `memory.current` on the GPU node. At or above `memory_stop_gib` (90 in the manifest, for a 100G request) that cell stops. Lower `parallel` and run the cell again. There is no automatic retry. If the reading fails and `parallel` is above 1, the cell stops as well.
+
+`scripts/prefetch-opencode` installs pinned Node 22.21.0 and `opencode-ai` 1.19.3 under `~/.cache/mage-opencode`. The grid bind-mounts that directory and selects `scripts.harbor.opencode_cached:OpenCodeCached`, which skips nvm and `npm i -g` when the mounted binary reports that pin. Without the cache, Harbor's usual per-trial OpenCode install runs.
+
+The shipped dataset list is `swebenchpro`. Any other id fails before a GPU is requested. The 128k cell starts at parallel 5. The 32k cell and the smoke profile are in the manifest so a later cell can load the next model on its own allocation. Conditions never get separate allocations.
 
 ## Run artifacts
 

@@ -1,0 +1,24 @@
+{
+  "slots_at_128k": 5,
+  "memory_stop_gib": 90,
+  "stages": ["probe", "confirm"],
+  "probe_tasks": 1,
+  "confirm_tasks": 12,
+  "datasets": ["swebenchpro"],
+  "conditions": ["baseline", "mage"],
+  "allocation": {
+    "account": "scholar",
+    "partition": "spark-batch",
+    "gpus": 1,
+    "cpus": 20,
+    "mem": "100G",
+    "time": "04:00:00",
+    "jump": "scholar"
+  },
+  "cells": [
+    {"profile": "qwen36-35b", "context": 131072, "parallel": 5},
+    {"profile": "qwen36-35b", "context": 32768, "parallel": 8},
+    {"profile": "smoke-4b", "context": 16384, "parallel": 8}
+  ],
+  "note": "parallel is llama.cpp -np and Harbor --n-concurrent. probe is one task per condition. confirm runs only when the operator passes --stage confirm. Add a dataset id only after harbor datasets list shows it. The only accepted id today is swebenchpro."
+}

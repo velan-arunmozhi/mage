@@ -132,6 +132,13 @@ class ResolveTests(unittest.TestCase):
         self.assertIn("org/Custom-GGUF:Q4_K_M", argv)
         self.assertNotIn("Qwen/Qwen3-4B-GGUF:Q4_K_M", argv)
         self.assertEqual(argv[argv.index("-c") + 1], "2048")
+        wide = mage_scholar.resolve_config(
+            {"model_profile": "qwen36-35b", "context": "32768", "parallel": "8"},
+            {},
+        )
+        wide_argv = mage_scholar.server_argv(wide, "llama-server")
+        self.assertEqual(wide_argv[wide_argv.index("-np") + 1], "8")
+        self.assertEqual(wide_argv[wide_argv.index("-c") + 1], "262144")
 
     def test_qwen36_argv_uses_known_working_flags(self):
         resolved = mage_scholar.resolve_config({"model_profile": "qwen36-35b"}, {})

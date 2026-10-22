@@ -406,7 +406,8 @@ def resolve_config(
     warnings: list[str] = []
     if parallel > 1:
         warnings.append(
-            "parallel slots multiply KV cache. -c is the per-slot context, not the sum."
+            "This llama.cpp build divides -c by -np. "
+            "The launcher sets -c to context times parallel so each slot gets the requested context."
         )
     if profile_name == "qwen36-35b" and flash != "off":
         warnings.append(
@@ -457,7 +458,10 @@ def resolve_config(
             "per_slot_context": context,
             "parallel_slots": parallel,
             "slots_times_context": context * parallel,
-            "note": "llama.cpp -c is the per-slot context. Total KV cache grows with the slot count.",
+            "note": (
+                "Requested context is per slot. This llama.cpp build divides -c by -np, "
+                "so the launcher passes context times parallel as -c."
+            ),
         },
         "warnings": warnings,
     }
@@ -484,14 +488,17 @@ def _normalize_managed(value: str) -> str:
 
 
 def server_argv(resolved: Mapping[str, Any], binary: str) -> list[str]:
+    # llama.cpp -c is the KV pool. With -np N the server gives each slot -c/N.
+    slot_context = int(resolved["context"])
+    slots = int(resolved["parallel"])
     argv = [
         binary,
         "-ngl",
         str(resolved["gpu_layers"]),
         "-c",
-        str(resolved["context"]),
+        str(slot_context * slots),
         "-np",
-        str(resolved["parallel"]),
+        str(slots),
         "-fa",
         str(resolved["flash_attn"]),
         "--jinja",

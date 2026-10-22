@@ -136,7 +136,12 @@ cleanup() {
     mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "${JUMP}" || true
   fi
 }
+on_signal() {
+  cleanup
+  exit 130
+}
 trap cleanup EXIT
+trap on_signal INT TERM
 
 parse_args() {
   mage_reset_cli
