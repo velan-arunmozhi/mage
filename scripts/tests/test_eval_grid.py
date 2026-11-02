@@ -264,6 +264,23 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(parallels, ["5", "8", "8"])
         self.assertEqual(concurrents, ["5", "5", "8", "8", "8", "8"])
 
+    def test_use_gpus_stays_on_the_eval_host_command(self):
+        manifest = grid.load_manifest(MANIFEST)
+        planned = grid.plan(
+            manifest,
+            "probe",
+            ROOT,
+            manifest.allocation,
+            None,
+            Path("<grid>/harbor"),
+            4,
+            "billin19 sbelgal",
+        )
+        host = planned[0].eval_host
+        self.assertEqual(flag(host, "--gpus"), "1")
+        self.assertEqual(flag(host, "--use-gpus"), "4")
+        self.assertEqual(flag(host, "--ssh-users"), "billin19 sbelgal")
+
     def test_confirm_uses_twelve_tasks_only_when_asked(self):
         self.assertEqual(grid.parse_args(["--stage", "confirm"]).stage, "confirm")
         manifest = grid.load_manifest(MANIFEST)
@@ -420,6 +437,77 @@ class ExecuteTests(unittest.TestCase):
         self.assertIn("--skill", io.harbor[1])
         self.assertIn(str(ROOT), io.env["PYTHONPATH"])
         self.assertEqual(io.servers[0].stops, 1)
+
+    def test_fleet_splits_tasks_across_server_urls(self):
+        manifest = grid.load_manifest(MANIFEST)
+        names = [f"task-{index}" for index in range(12)]
+
+        def fake_names(dataset, limit):
+            self.assertEqual(dataset, "swebenchpro")
+            return names[:limit]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = write_run(root)
+            (run / "fleet.json").write_text(
+                json.dumps(
+                    {
+                        "slots": [
+                            {
+                                "model_ssh": "billin19@scholar-a",
+                                "jump": "billin19@login",
+                                "job_id": "11",
+                                "local_port": "18080",
+                            },
+                            {
+                                "model_ssh": "sbelgal@scholar-b",
+                                "jump": "sbelgal@login",
+                                "job_id": "12",
+                                "local_port": "18081",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lines = [
+                f"Run directory: {run}\n",
+                "Fleet servers: 2\n",
+                "Container base URL: http://host.docker.internal:18080/v1\n",
+                "Container base URL: http://host.docker.internal:18081/v1\n",
+            ]
+            io = FakeIO(lines, 10 * GIB)
+            with mock.patch.object(grid, "list_dataset_task_names", fake_names):
+                code = grid.execute(
+                    manifest=manifest,
+                    stage="confirm",
+                    repo=ROOT,
+                    allocation=manifest.allocation,
+                    cache=None,
+                    state_dir=root / "state",
+                    io=io,
+                    startup_timeout=5,
+                    only="0",
+                    use_gpus=4,
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual(flag(io.started[0], "--use-gpus"), "4")
+        self.assertEqual(len(io.memory_calls), 2)
+        self.assertEqual(len(io.harbor), 4)
+
+        def included(argv):
+            return [
+                argv[index + 1]
+                for index, item in enumerate(argv)
+                if item == "--include-task-name"
+            ]
+
+        baseline = [argv for argv in io.harbor if "-baseline-" in flag(argv, "--job-name")]
+        self.assertEqual(len(baseline), 2)
+        parts = [included(argv) for argv in baseline]
+        self.assertEqual(sorted(parts[0] + parts[1]), sorted(names))
+        self.assertFalse(set(parts[0]) & set(parts[1]))
+        self.assertTrue(all(flag(argv, "--job-name").endswith(("-s0", "-s1")) for argv in io.harbor))
 
     def test_unreadable_memory_stops_when_parallel_is_above_one(self):
         action, reason = grid.memory_decision(None, 5, 90)

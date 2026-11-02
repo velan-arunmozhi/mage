@@ -20,15 +20,70 @@ def chat(content, finish="stop", reasoning=""):
     }
 
 
+class HarborTimeoutTests(unittest.TestCase):
+    def test_missing_agent_timeout_becomes_two_hours(self):
+        config = {"agents": [{"name": "opencode"}, {"override_timeout_sec": 90}]}
+        mage_scholar.apply_harbor_agent_timeout(config)
+        self.assertEqual(config["agents"][0]["override_timeout_sec"], 7200)
+        self.assertEqual(config["agents"][1]["override_timeout_sec"], 90)
+        self.assertEqual(mage_scholar.apply_harbor_agent_timeout("nope"), "nope")
+
+    def test_harbor_run_wrapper_sets_the_agent_timeout(self):
+        wrapper = Path(__file__).resolve().parents[1] / "harbor-run"
+        task = Path(
+            "/home/aj/.cache/harbor/tasks/packages/hello-world/hello-world/"
+            "38d7a077f07fbee8efc78db5dec9a72f82e727510ad1dcfeac0b55fa845256b7"
+        )
+        if not task.is_dir() or not wrapper.is_file():
+            self.skipTest("hello-world task or harbor-run is absent")
+        proc = subprocess.run(
+            [
+                str(wrapper),
+                "run",
+                "--print-config",
+                "--yes",
+                "--agent",
+                "opencode",
+                "--path",
+                str(task),
+                "--model",
+                "scholar/qwen35-2b",
+                "--n-concurrent",
+                "1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        start = proc.stdout.index("{")
+        payload = json.loads(proc.stdout[start:])
+        self.assertEqual(payload["agents"][0]["override_timeout_sec"], 7200.0)
+
+
 class ResolveTests(unittest.TestCase):
     def test_legacy_default(self):
         resolved = mage_scholar.resolve_config({}, {})
-        self.assertEqual(resolved["model_hf"], "Qwen/Qwen3-4B-GGUF:Q4_K_M")
-        self.assertEqual(resolved["model_alias"], "qwen3-4b")
-        self.assertEqual(resolved["context"], 8192)
+        self.assertEqual(resolved["model_hf"], "unsloth/Qwen3.5-2B-GGUF:Q4_K_M")
+        self.assertEqual(resolved["model_alias"], "qwen35-2b")
+        self.assertEqual(resolved["context"], 131072)
         self.assertEqual(resolved["flash_attn"], "on")
+        self.assertEqual(resolved["mmproj"], "off")
+        self.assertEqual(resolved["smoke_max_tokens"], 1024)
         self.assertEqual(resolved["gpu_layers"], 999)
         self.assertTrue(resolved["benchmark_ready"])
+        argv = mage_scholar.server_argv(resolved, "llama-server")
+        self.assertEqual(argv[argv.index("-c") + 1], "131072")
+        self.assertEqual(argv[argv.index("-fa") + 1], "on")
+        self.assertIn("--no-mmproj", argv)
+        self.assertNotIn("--mmproj-auto", argv)
+        named = mage_scholar.resolve_config({"model_profile": "qwen35-2b"}, {})
+        self.assertEqual(named["model_hf"], resolved["model_hf"])
+        self.assertEqual(named["model_alias"], resolved["model_alias"])
+        self.assertEqual(named["context"], 131072)
+        self.assertEqual(named["flash_attn"], "on")
+        self.assertEqual(named["mmproj"], "off")
 
     def test_precedence_cli_over_env_over_profile(self):
         resolved = mage_scholar.resolve_config(
@@ -39,7 +94,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(resolved["flash_attn"], "on")
         self.assertEqual(resolved["model_hf"], "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M")
         self.assertEqual(resolved["model_alias"], "qwen36-35b")
-        self.assertIn("Flash Attention off", " ".join(resolved["warnings"]))
+        self.assertNotIn("Flash Attention off", " ".join(resolved["warnings"]))
 
     def test_env_overrides_profile_context(self):
         resolved = mage_scholar.resolve_config(
@@ -47,14 +102,15 @@ class ResolveTests(unittest.TestCase):
             {"MAGE_CONTEXT": "8192", "MAGE_OUTPUT_LIMIT": "1024", "MAGE_SMOKE_MAX_TOKENS": "512"},
         )
         self.assertEqual(resolved["context"], 8192)
-        self.assertEqual(resolved["flash_attn"], "off")
+        self.assertEqual(resolved["flash_attn"], "on")
+        self.assertEqual(resolved["mmproj"], "off")
         self.assertEqual(resolved["gpu_layers"], 999)
 
     def test_profile_values(self):
         coder = mage_scholar.resolve_config({"model_profile": "coder-14b"}, {})
         self.assertEqual(coder["gpu_layers"], 32)
         self.assertEqual(coder["context"], 4096)
-        self.assertEqual(coder["flash_attn"], "off")
+        self.assertEqual(coder["flash_attn"], "on")
         self.assertEqual(coder["model_alias"], "qwen2.5-coder-14b")
         diagnostic = mage_scholar.resolve_config({"model_profile": "qwen30b-diagnostic"}, {})
         self.assertFalse(diagnostic["benchmark_ready"])
@@ -109,6 +165,8 @@ class ResolveTests(unittest.TestCase):
         with self.assertRaises(mage_scholar.ConfigError):
             mage_scholar.resolve_config({"reasoning": "off"}, {})
         with self.assertRaises(mage_scholar.ConfigError):
+            mage_scholar.resolve_config({"mmproj": "maybe"}, {})
+        with self.assertRaises(mage_scholar.ConfigError):
             mage_scholar.resolve_config(
                 {"model_profile": "qwen36-35b", "model_hf": "org/Other:Q4_K_M"},
                 {},
@@ -139,13 +197,29 @@ class ResolveTests(unittest.TestCase):
         wide_argv = mage_scholar.server_argv(wide, "llama-server")
         self.assertEqual(wide_argv[wide_argv.index("-np") + 1], "8")
         self.assertEqual(wide_argv[wide_argv.index("-c") + 1], "262144")
+        self.assertIn("--no-mmproj", wide_argv)
+
+    def test_mmproj_auto_loads_the_projector_and_flash_off_is_separate(self):
+        off = mage_scholar.resolve_config(
+            {"model_profile": "qwen36-35b", "flash_attn": "off"},
+            {},
+        )
+        self.assertEqual(off["flash_attn"], "off")
+        self.assertIn("Flash Attention off", " ".join(off["warnings"]))
+        auto = mage_scholar.resolve_config({"mmproj": "on"}, {})
+        argv = mage_scholar.server_argv(auto, "llama-server")
+        self.assertEqual(auto["model_hf"], "unsloth/Qwen3.5-2B-GGUF:Q4_K_M")
+        self.assertIn("--mmproj-auto", argv)
+        self.assertNotIn("--no-mmproj", argv)
+        self.assertEqual(argv[argv.index("-fa") + 1], "on")
 
     def test_qwen36_argv_uses_known_working_flags(self):
         resolved = mage_scholar.resolve_config({"model_profile": "qwen36-35b"}, {})
         argv = mage_scholar.server_argv(resolved, "/opt/llama-server")
         self.assertEqual(argv[0], "/opt/llama-server")
         self.assertEqual(argv[argv.index("-c") + 1], "131072")
-        self.assertEqual(argv[argv.index("-fa") + 1], "off")
+        self.assertEqual(argv[argv.index("-fa") + 1], "on")
+        self.assertIn("--no-mmproj", argv)
         self.assertEqual(argv[argv.index("-ngl") + 1], "999")
         self.assertEqual(argv[argv.index("--alias") + 1], "qwen36-35b")
         self.assertIn("--jinja", argv)
@@ -365,6 +439,30 @@ class DatasetAndBatchTests(unittest.TestCase):
                     "time": "02:00:00",
                 }
             )
+
+
+class FleetPlanTests(unittest.TestCase):
+    def test_two_gpus_per_account_and_even_shards(self):
+        plan = mage_scholar.fleet_plan(4, ["billin19", "sbelgal", "lu1184"])
+        self.assertEqual(plan["accounts_needed"], 2)
+        self.assertEqual(plan["gpus"], 4)
+        self.assertEqual(
+            [(slot["user"], slot["gpus"]) for slot in plan["slots"]],
+            [("billin19", 1), ("billin19", 1), ("sbelgal", 1), ("sbelgal", 1)],
+        )
+        self.assertEqual(plan["warnings"], [])
+        odd = mage_scholar.fleet_plan(3, ["billin19", "sbelgal"])
+        self.assertIn("sbelgal", odd["warnings"][0])
+        self.assertEqual(len(odd["slots"]), 3)
+        short = mage_scholar.fleet_plan(6, ["billin19"])
+        self.assertEqual(short["gpus"], 2)
+        self.assertIn("1 account is available", short["warnings"][0])
+        self.assertEqual(
+            mage_scholar.shard_names(["a", "b", "c", "d", "e"], 2),
+            [["a", "b", "c"], ["d", "e"]],
+        )
+        with self.assertRaises(mage_scholar.ConfigError):
+            mage_scholar.fleet_plan(2, ["bad user"])
 
 
 if __name__ == "__main__":

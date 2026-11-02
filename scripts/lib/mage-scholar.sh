@@ -43,6 +43,7 @@ mage_reset_cli() {
   CLI_CONTEXT=""
   CLI_GPU_LAYERS=""
   CLI_FLASH_ATTN=""
+  CLI_MMPROJ=""
   CLI_PARALLEL=""
   CLI_PORT=""
   CLI_BIND=""
@@ -62,6 +63,7 @@ mage_reset_cli() {
   CLI_SET_CONTEXT=0
   CLI_SET_GPU_LAYERS=0
   CLI_SET_FLASH_ATTN=0
+  CLI_SET_MMPROJ=0
   CLI_SET_PARALLEL=0
   CLI_SET_PORT=0
   CLI_SET_BIND=0
@@ -93,6 +95,7 @@ mage_take_model_flag() {
     --context) mage_require_value "$1" "${2:-}"; CLI_CONTEXT="$2"; CLI_SET_CONTEXT=1; MAGE_SHIFT_N=2 ;;
     --gpu-layers) mage_require_value "$1" "${2:-}"; CLI_GPU_LAYERS="$2"; CLI_SET_GPU_LAYERS=1; MAGE_SHIFT_N=2 ;;
     --flash-attn) mage_require_value "$1" "${2:-}"; CLI_FLASH_ATTN="$2"; CLI_SET_FLASH_ATTN=1; MAGE_SHIFT_N=2 ;;
+    --mmproj) mage_require_value "$1" "${2:-}"; CLI_MMPROJ="$2"; CLI_SET_MMPROJ=1; MAGE_SHIFT_N=2 ;;
     --parallel) mage_require_value "$1" "${2:-}"; CLI_PARALLEL="$2"; CLI_SET_PARALLEL=1; MAGE_SHIFT_N=2 ;;
     --port) mage_require_value "$1" "${2:-}"; CLI_PORT="$2"; CLI_SET_PORT=1; MAGE_SHIFT_N=2 ;;
     --bind) mage_require_value "$1" "${2:-}"; CLI_BIND="$2"; CLI_SET_BIND=1; MAGE_SHIFT_N=2 ;;
@@ -124,6 +127,7 @@ mage_resolve_file() {
   [[ "$CLI_SET_CONTEXT" -eq 1 ]] && args+=(--context "$CLI_CONTEXT")
   [[ "$CLI_SET_GPU_LAYERS" -eq 1 ]] && args+=(--gpu-layers "$CLI_GPU_LAYERS")
   [[ "$CLI_SET_FLASH_ATTN" -eq 1 ]] && args+=(--flash-attn "$CLI_FLASH_ATTN")
+  [[ "$CLI_SET_MMPROJ" -eq 1 ]] && args+=(--mmproj "$CLI_MMPROJ")
   [[ "$CLI_SET_PARALLEL" -eq 1 ]] && args+=(--parallel "$CLI_PARALLEL")
   [[ "$CLI_SET_PORT" -eq 1 ]] && args+=(--port "$CLI_PORT")
   [[ "$CLI_SET_BIND" -eq 1 ]] && args+=(--bind "$CLI_BIND")
@@ -587,7 +591,7 @@ mage_check_llama_help() {
   if ! "$bin" --help >"$helpfile" 2>&1; then
     true
   fi
-  for token in alias jinja port flash; do
+  for token in alias jinja port flash mmproj; do
     if ! grep -qi "$token" "$helpfile"; then
       cat >&2 <<EOF
 llama-server at ${bin} did not advertise '${token}' in --help.

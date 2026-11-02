@@ -37,13 +37,15 @@ Commands:
   help      Show this text.
 
 Model options (CLI overrides environment, which overrides the profile, which overrides the legacy default):
-  --model-profile NAME     smoke-4b, coder-14b, qwen36-35b, or qwen30b-diagnostic
+  --model-profile NAME     qwen35-2b, smoke-4b, coder-14b, qwen36-35b, or qwen30b-diagnostic
   --model-hf REPO:QUANT    Hugging Face GGUF reference passed to -hf
   --model-file PATH        Local GGUF passed to -m
   --model-alias NAME       OpenAI-compatible id passed to --alias
   --context N              Per-slot context passed to -c
   --gpu-layers N           Passed to -ngl
-  --flash-attn on|off|auto
+  --flash-attn on|off|auto Default on.
+  --mmproj off|auto|on     Default off. off passes --no-mmproj so -hf does not
+                           load a vision projector. auto and on pass --mmproj-auto.
   --parallel N             Passed to -np. Default 1. -c is per slot.
   --port N                 Default 8080
   --bind ADDRESS           Default 127.0.0.1. Other addresses need --allow-public-bind.
@@ -70,9 +72,12 @@ Paths:
   --allow-public-bind      Permit a non-loopback bind.
   --dry-run                Same as plan.
 
-The legacy default remains Qwen3-4B Q4_K_M at 8192 context. The recommended
-evaluation pilot is --model-profile qwen36-35b. qwen30b-diagnostic can be
-served for investigation and is not benchmark-ready.
+With no profile, the model is unsloth/Qwen3.5-2B-GGUF:Q4_K_M, alias
+qwen35-2b, context 131072, Flash Attention on, and no vision projector.
+A benchmark needs at least 65536 tokens of context.
+--model-profile qwen35-2b selects that same model. Qwen3-4B remains
+smoke-4b. qwen36-35b also uses Flash Attention on and --no-mmproj.
+qwen30b-diagnostic can be served for investigation and is not benchmark-ready.
 
 A new clone is pinned to llama.cpp ${MAGE_VERIFIED_LLAMA_COMMIT}. The build
 does not pass LLAMA_CURL; that option is ignored by this llama.cpp line and

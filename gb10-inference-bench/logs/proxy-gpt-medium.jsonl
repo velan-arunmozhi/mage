@@ -1,0 +1,2 @@
+{"mode": "gpt-medium", "usage": {"prompt_tokens": 91, "total_tokens": 126, "completion_tokens": 35, "prompt_tokens_details": null, "completion_tokens_details": {"reasoning_tokens": 0}}, "status": 200}
+{"mode": "gpt-medium", "usage": {"prompt_tokens": 130, "total_tokens": 186, "completion_tokens": 56, "prompt_tokens_details": null, "completion_tokens_details": {"reasoning_tokens": 0}}, "status": 200}

@@ -1,0 +1,4 @@
+PROFILE B content_tokens=8173 target_in=8192 target_out=1024
+WARMUP ok=True prompt=8255 out=32 err=None
+RUN profile=B c=32 mode=sustained
+RESULT harbor-bg-gpt-medium-B-c32-sustained-20261029T120019Z agg=236.40 tok/s completed=1690 failed=0 in_tok=8270.994082840236 out_tok=1730560 ttft_p50=71.25802505200045

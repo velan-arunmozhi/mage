@@ -4,7 +4,7 @@ Scholar's Spark nodes serve the model. An AMD64 host grades with OpenCode and Ha
 
 `scripts/lib/mage_scholar.py` is the config contract. `scripts/scholar-session` and `scripts/eval-host` both call it, so the CLI, the `llama-server` argv, the OpenCode context and output limits, and the Harbor job name come from one resolved config. Precedence is explicit CLI, then environment, then the chosen profile, then the legacy default.
 
-The legacy default, used when no profile is selected, is `Qwen/Qwen3-4B-GGUF:Q4_K_M`, alias `qwen3-4b`, context 8192, `-ngl 999`, `-fa on`, port 8080, bind `127.0.0.1`. The recommended evaluation pilot is the `qwen36-35b` profile. Those are different configs.
+The default, used when no profile is selected, is `unsloth/Qwen3.5-2B-GGUF:Q4_K_M`, alias `qwen35-2b`, context 131072, `-ngl 999`, `-fa on`, `--no-mmproj`, port 8080, bind `127.0.0.1`. `--model-profile qwen35-2b` selects that same model. `qwen36-35b` is a separate profile. A benchmark needs at least 65536 tokens of context. Smaller windows drop the MAGE skill files and the task detail.
 
 ## What survives a job
 
@@ -57,7 +57,7 @@ This is a workaround. It is not a patched NVIDIA driver. A kernel-driver issue n
 
 A new clone is pinned to commit `31288c9` (0.7.0-dev, ARM64, CUDA 13.1, architecture `121a-real`). The cluster driver observed with that build was `595.71.05`, with 64 KiB pages. An existing checkout is reused and is not reset. `--allow-llama-update` builds a separate tree at `<src>-<commit>`.
 
-The CMake line is `-DGGML_CUDA=ON` only. `-DLLAMA_CURL=ON` is omitted: current llama.cpp ignores it, and HTTPS downloads use OpenSSL. Before launch, the script checks `llama-server --help` for alias, jinja, port, and flash-attention flags. It does not add KV-cache quantization, CUDA graphs, or `-fa on` unless you pass them. The known-working Qwen3.6 profile uses `-fa off`. Extra server flags belong on `--llama-arg` and are recorded in the fingerprint.
+The CMake line is `-DGGML_CUDA=ON` only. `-DLLAMA_CURL=ON` is omitted: current llama.cpp ignores it, and HTTPS downloads use OpenSSL. Before launch, the script checks `llama-server --help` for alias, jinja, port, flash-attention, and mmproj flags. Flash Attention defaults to on (`-fa on`). Text launches pass `--no-mmproj`, so `-hf` does not download a vision projector. `--mmproj auto` or `--mmproj on` passes `--mmproj-auto` and restores that download. KV-cache quantization and CUDA graphs are still only added when passed as `--llama-arg`. Extra server flags are recorded in the fingerprint.
 
 `--llama-commit SHA` on `eval-host` records that commit in the Harbor fingerprint and forwards it to the remote `serve`. A new remote clone still pins `31288c9` when no commit is requested.
 
@@ -67,11 +67,12 @@ Profiles are known starting points. Selecting one does not mean every context or
 
 | Profile | Hugging Face ref / alias | Context and server flags | Standing |
 |---|---|---|---|
-| `smoke-4b` | `Qwen/Qwen3-4B-GGUF:Q4_K_M` / `qwen3-4b` | 16384 | Infrastructure smoke. A 40K context failed before the managed-memory workaround. |
-| `coder-14b` | `Qwen/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M` / `qwen2.5-coder-14b` | 4096, `-ngl 32`, `-fa off` | Load plus a two-token completion. A longer completion is not confirmed. |
-| `qwen36-35b` | `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M` / `qwen36-35b` | 131072, `-ngl 999`, `-fa off`, `-np 1` | Preferred pilot. Short prompt, coherent final answer, 128K capacity initialized. |
-| `qwen30b-diagnostic` | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M` / `qwen3-coder-30b` | 4096 | Diagnostic only. `eval-host` refuses it unless `--allow-not-ready` is set. |
-| *(no profile)* | Qwen3-4B Q4 / `qwen3-4b` | 8192, `-ngl 999`, `-fa on` | Legacy script default. Distinct from `smoke-4b`. |
+| `qwen35-2b` | `unsloth/Qwen3.5-2B-GGUF:Q4_K_M` / `qwen35-2b` | 131072, `-ngl 999`, `-fa on`, `--no-mmproj` | Default model. Same config as no profile. Not yet loaded in this repo. |
+| `smoke-4b` | `Qwen/Qwen3-4B-GGUF:Q4_K_M` / `qwen3-4b` | 16384, `-fa on`, `--no-mmproj` | Infrastructure smoke. A 40K context failed before the managed-memory workaround. |
+| `coder-14b` | `Qwen/Qwen2.5-Coder-14B-Instruct-GGUF:Q4_K_M` / `qwen2.5-coder-14b` | 4096, `-ngl 32`, `-fa on`, `--no-mmproj` | Load plus a two-token completion. That check used `-fa off`. A longer completion is not confirmed. |
+| `qwen36-35b` | `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M` / `qwen36-35b` | 131072, `-ngl 999`, `-fa on`, `--no-mmproj`, `-np 1` | 35B-A3B profile. Short prompt, coherent final answer, 128K capacity initialized with `-fa off` and the projector loaded. |
+| `qwen30b-diagnostic` | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M` / `qwen3-coder-30b` | 4096, `-fa on`, `--no-mmproj` | Diagnostic only. `eval-host` refuses it unless `--allow-not-ready` is set. |
+| *(no profile)* | Qwen3.5-2B Q4 / `qwen35-2b` | 131072, `-ngl 999`, `-fa on`, `--no-mmproj` | Same as `qwen35-2b`. |
 
 Changing a profile's model without an explicit `--model-alias` is an error. Output limit must be smaller than context. There is no silent clamp from 128K to 8K or from Qwen3.6 to 4B.
 
@@ -92,7 +93,7 @@ export HF_HOME="$RCAC_SCRATCH/hf-cache"
   --host 127.0.0.1 --port 8080
 ```
 
-Qwen3.6-35B-A3B at context 131072 completed one short-prompt answer (`finish_reason=stop`, 2377 generated tokens, about 50 generated tok/s, about 65 prompt tok/s on that short prompt). The same model at context 8192 with a 512-token cap returned coherent `reasoning_content` and empty `content` because the cap was exhausted. The 131072 result shows that the server initialized that capacity. It does not show long-prompt, tool-call, or SWE-bench Pro behavior. The log mentioned `mmproj-BF16.gguf` and that reasoning preservation is the default. Text benchmarks keep that default and do not add the vision projector.
+Qwen3.6-35B-A3B at context 131072 completed one short-prompt answer (`finish_reason=stop`, 2377 generated tokens, about 50 generated tok/s, about 65 prompt tok/s on that short prompt). The same model at context 8192 with a 512-token cap returned coherent `reasoning_content` and empty `content` because the cap was exhausted. The 131072 result shows that the server initialized that capacity. It does not show long-prompt, tool-call, or SWE-bench Pro behavior. That launch loaded `mmproj-BF16.gguf` because `-hf` attaches a vision projector when the repo has one. Current launches pass `--no-mmproj` unless `--mmproj auto` is set. The command below is the observed launch, not the current default argv.
 
 ```bash
 export GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
@@ -138,6 +139,8 @@ Harbor runs one condition at a time, concurrency 1, with the same model, context
 
 `mage` copies skills only. A skills-plus-repository-representations condition is not implemented, and it is not a `--condition` value. One smoke task is not an aggregate SWE-bench Pro score.
 
+Harbor benchmark launches go through `scripts/harbor-run`. The agent timeout is 7200 seconds (2 hours). That replaces the timeout in the task file, including SWE-bench Pro's 3000 seconds and the hello-world task's 120 seconds. The verifier keeps the timeout from the task file.
+
 The Harbor job name is `mage-<dataset>-<condition>-n<count>-<alias>-c<context>-<fingerprint>`. The fingerprint covers the model ref, revision, alias, context, sampling, reasoning, output limit, llama.cpp commit, dataset identity, task selection, condition, and runtime flags. The same config resumes. A different config gets a different job name.
 
 ## Dataset identity
@@ -146,15 +149,17 @@ The default Harbor alias remains `swebenchpro`. Harbor's main SWE-bench Pro adap
 
 `swebench_release` stays `unverified` until a live run records what that Harbor binary actually loaded. V1, V2, and HARD-51 results stay in separate comparisons.
 
-## Context is an experiment
+## Context
+
+The default context is 131072 (128K). A benchmark run needs at least 65536 (64K). The benchmarks are complex, and the MAGE skill files under `.agents/skills` are large. A shorter window drops the task or the skills. Infrastructure smokes can use a shorter window. A benchmark comparison should not.
 
 | Context | Role |
 |---|---|
-| 8K–16K | Smoke and infrastructure |
-| 32K | Pilot |
-| 64K | Proposed compromise for longer agent traces |
-| 128K | Comparison. Qwen3.6 initialized this capacity on a short prompt. |
-| 256K | Stretch, only after the shorter settings are measured |
+| 8K–16K | Infrastructure smoke only. Too small for a benchmark. |
+| 32K | Still below the benchmark floor. |
+| 64K | Minimum for a benchmark. The tasks and the MAGE skill files need this much. |
+| 128K | Default. 131072 tokens. |
+| 256K | Stretch, only after the shorter settings are measured. |
 
 Record actual input tokens, output tokens, prefill and decode rates, time to first token, wall time, and cgroup memory. The Qwen3.6 rates above are one short-prompt observation.
 

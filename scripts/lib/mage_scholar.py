@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 CONTRACT_VERSION = 1
+HARBOR_AGENT_TIMEOUT_SEC = 7200
 VERIFIED_LLAMA_COMMIT = "31288c9c66e59377f7788d920678a565bb89dd37"
 VERIFIED_CUDA_ROOT = (
     "/apps/spack/scholar-dgx/apps/cuda/13.1.1-none-none-hfb3k4d"
@@ -38,28 +39,52 @@ DATASET_NOTE = (
 )
 
 LEGACY = {
-    "model_hf": "Qwen/Qwen3-4B-GGUF:Q4_K_M",
-    "model_alias": "qwen3-4b",
-    "context": 8192,
+    "model_hf": "unsloth/Qwen3.5-2B-GGUF:Q4_K_M",
+    "model_alias": "qwen35-2b",
+    "context": 131072,
     "gpu_layers": 999,
     "flash_attn": "on",
+    "mmproj": "off",
     "parallel": 1,
     "port": 8080,
     "bind": "127.0.0.1",
     "cuda_managed": "auto",
     "output_limit": 4096,
-    "smoke_max_tokens": 256,
+    "smoke_max_tokens": 1024,
     "reasoning": "preserve",
     "role": "legacy-default",
     "benchmark_ready": True,
     "note": (
-        "Legacy default kept for existing scholar-session invocations: "
-        "Qwen3-4B Q4_K_M, 8192 context, full offload, Flash Attention on. "
-        "The recommended evaluation pilot is the qwen36-35b profile."
+        "Default when no profile is selected: Qwen3.5-2B Q4_K_M, 131072 context, "
+        "full offload, Flash Attention on, and no vision projector. Benchmark "
+        "runs need at least 65536 because of the task size and the MAGE skill "
+        "files. The smoke budget is 1024 because Qwen3.5 spends the first "
+        "tokens on reasoning. The same model is the qwen35-2b profile. "
+        "Qwen3-4B remains smoke-4b."
     ),
 }
 
 PROFILES: dict[str, dict[str, Any]] = {
+    "qwen35-2b": {
+        "model_hf": "unsloth/Qwen3.5-2B-GGUF:Q4_K_M",
+        "model_alias": "qwen35-2b",
+        "context": 131072,
+        "gpu_layers": 999,
+        "flash_attn": "on",
+        "mmproj": "off",
+        "parallel": 1,
+        "output_limit": 4096,
+        "smoke_max_tokens": 1024,
+        "reasoning": "preserve",
+        "benchmark_ready": True,
+        "role": "default-model",
+        "note": (
+            "Named form of the no-profile default. Qwen3.5-2B Q4_K_M, 131072 "
+            "context, Flash Attention on, vision projector off. Benchmark runs "
+            "need at least 65536. This repo has not yet recorded a Scholar "
+            "load of this GGUF."
+        ),
+    },
     "smoke-4b": {
         "model_hf": "Qwen/Qwen3-4B-GGUF:Q4_K_M",
         "model_alias": "qwen3-4b",
@@ -82,7 +107,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "model_alias": "qwen2.5-coder-14b",
         "context": 4096,
         "gpu_layers": 32,
-        "flash_attn": "off",
+        "flash_attn": "on",
         "parallel": 1,
         "output_limit": 1024,
         "smoke_max_tokens": 128,
@@ -92,7 +117,8 @@ PROFILES: dict[str, dict[str, Any]] = {
         "note": (
             "Verified on scholar-k060 on 2026-10-20 with the original "
             "llama.cpp build at commit 31288c9, CUDA 13.1.115, 32 GPU layers, "
-            "Flash Attention off, and GGML_CUDA_ENABLE_UNIFIED_MEMORY=1. The "
+            "and GGML_CUDA_ENABLE_UNIFIED_MEMORY=1. That check used Flash "
+            "Attention off. The profile now requests Flash Attention on. The "
             "server loaded and a two-token OK completion returned. A longer "
             "completion is not yet confirmed."
         ),
@@ -102,7 +128,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "model_alias": "qwen36-35b",
         "context": 131072,
         "gpu_layers": 999,
-        "flash_attn": "off",
+        "flash_attn": "on",
         "parallel": 1,
         "output_limit": 8192,
         "smoke_max_tokens": 4096,
@@ -113,9 +139,11 @@ PROFILES: dict[str, dict[str, Any]] = {
             "Preferred current evaluation pilot. On scholar-k060 on 2026-10-20 "
             "the server initialized 131072 context and a short prompt produced "
             "a coherent final answer with finish_reason=stop (2377 generated "
-            "tokens, about 50 generated tokens/s on that one request). Flash "
-            "Attention was off. This does not establish long-prompt accuracy, "
-            "tool-call reliability, or SWE-bench Pro success."
+            "tokens, about 50 generated tokens/s on that one request). That "
+            "run used Flash Attention off and loaded the vision projector. "
+            "The profile now requests Flash Attention on and --no-mmproj. "
+            "This does not establish long-prompt accuracy, tool-call "
+            "reliability, or SWE-bench Pro success."
         ),
     },
     "qwen30b-diagnostic": {
@@ -123,7 +151,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "model_alias": "qwen3-coder-30b",
         "context": 4096,
         "gpu_layers": 999,
-        "flash_attn": "off",
+        "flash_attn": "on",
         "parallel": 1,
         "output_limit": 1024,
         "smoke_max_tokens": 256,
@@ -148,6 +176,7 @@ ENV_KEYS = {
     "context": "MAGE_CONTEXT",
     "gpu_layers": "MAGE_GPU_LAYERS",
     "flash_attn": "MAGE_FLASH_ATTN",
+    "mmproj": "MAGE_MMPROJ",
     "parallel": "MAGE_PARALLEL",
     "port": "MAGE_PORT",
     "bind": "MAGE_BIND",
@@ -177,6 +206,24 @@ class ConfigError(ValueError):
 
 def dump(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def apply_harbor_agent_timeout(config: Any) -> Any:
+    """Set Harbor's agent timeout to two hours when a launch did not set one.
+
+    Harbor's run command rebuilds the agent from --agent and drops
+    override_timeout_sec from an earlier config file. Call this on the dict
+    that JobConfig.model_validate is about to accept.
+    """
+    if not isinstance(config, dict):
+        return config
+    agents = config.get("agents")
+    if not isinstance(agents, list):
+        return config
+    for agent in agents:
+        if isinstance(agent, dict) and agent.get("override_timeout_sec") in (None, ""):
+            agent["override_timeout_sec"] = HARBOR_AGENT_TIMEOUT_SEC
+    return config
 
 
 def _present(value: Any) -> bool:
@@ -365,6 +412,9 @@ def resolve_config(
     flash = str(pick("flash_attn", LEGACY["flash_attn"])).lower()
     if flash not in {"on", "off", "auto"}:
         raise ConfigError("--flash-attn must be on, off, or auto.")
+    mmproj = str(pick("mmproj", LEGACY["mmproj"])).lower()
+    if mmproj not in {"off", "auto", "on"}:
+        raise ConfigError("--mmproj must be off, auto, or on.")
     cuda_managed = _normalize_managed(str(pick("cuda_managed", LEGACY["cuda_managed"])))
     reasoning = str(pick("reasoning", "preserve")).lower()
     if reasoning != "preserve":
@@ -409,10 +459,10 @@ def resolve_config(
             "This llama.cpp build divides -c by -np. "
             "The launcher sets -c to context times parallel so each slot gets the requested context."
         )
-    if profile_name == "qwen36-35b" and flash != "off":
+    if profile_name == "qwen36-35b" and flash == "off":
         warnings.append(
-            "The known-working Qwen3.6 run used Flash Attention off. "
-            "This invocation overrides that and should be compared separately."
+            "Flash Attention is on for this profile. An off run is a separate "
+            "measurement. The 2026-10-20 load used Flash Attention off."
         )
     if profile_name in {"qwen36-35b", "coder-14b"} and cuda_managed == "off":
         warnings.append(
@@ -444,6 +494,7 @@ def resolve_config(
         "context": context,
         "gpu_layers": gpu_layers,
         "flash_attn": flash,
+        "mmproj": mmproj,
         "parallel": parallel,
         "port": port,
         "bind": bind,
@@ -513,6 +564,14 @@ def server_argv(resolved: Mapping[str, Any], binary: str) -> list[str]:
         argv.extend(["-m", str(resolved["model_file"])])
     else:
         argv.extend(["-hf", str(resolved["model_hf"])])
+    # -hf downloads a sibling mmproj when the repo has one. Text runs skip it.
+    mmproj = str(resolved.get("mmproj") or "off").lower()
+    if mmproj == "off":
+        argv.append("--no-mmproj")
+    elif mmproj in {"auto", "on"}:
+        argv.append("--mmproj-auto")
+    else:
+        raise ConfigError("--mmproj must be off, auto, or on.")
     if resolved.get("temperature"):
         argv.extend(["--temp", str(resolved["temperature"])])
     argv.extend(str(item) for item in resolved.get("llama_extra") or [])
@@ -528,6 +587,7 @@ def fingerprint(resolved: Mapping[str, Any], run: Mapping[str, Any]) -> dict[str
         "context": resolved.get("context"),
         "gpu_layers": resolved.get("gpu_layers"),
         "flash_attn": resolved.get("flash_attn"),
+        "mmproj": resolved.get("mmproj") or "off",
         "parallel": resolved.get("parallel"),
         "output_limit": resolved.get("output_limit"),
         "reasoning": resolved.get("reasoning"),
@@ -1020,6 +1080,114 @@ def tool_followup(resolved: Mapping[str, Any], tool_verdict: Mapping[str, Any]) 
     }
 
 
+USER_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def shard_names(names: list[str], shards: int) -> list[list[str]]:
+    """Split names into contiguous shards. Earlier shards receive the remainder."""
+    if isinstance(shards, bool) or not isinstance(shards, int) or shards < 1:
+        raise ConfigError("shard count must be a positive integer.")
+    if any(not isinstance(name, str) or not name for name in names):
+        raise ConfigError("Each task name must be a non-empty string.")
+    buckets: list[list[str]] = [[] for _ in range(shards)]
+    if not names:
+        return buckets
+    base, extra = divmod(len(names), shards)
+    cursor = 0
+    for index in range(shards):
+        take = base + (1 if index < extra else 0)
+        buckets[index] = list(names[cursor : cursor + take])
+        cursor += take
+    return buckets
+
+
+def fleet_plan(use_gpus: int, users: list[str]) -> dict[str, Any]:
+    """Plan gpu:1 jobs, two per account, for a requested GPU count."""
+    if isinstance(use_gpus, bool) or not isinstance(use_gpus, int) or use_gpus < 1:
+        raise ConfigError("--use-gpus must be a positive integer.")
+    if not users:
+        raise ConfigError("No Scholar accounts are available for the fleet.")
+    seen: set[str] = set()
+    for user in users:
+        if not isinstance(user, str) or not USER_RE.fullmatch(user):
+            raise ConfigError(f"Refusing SSH user {user!r}.")
+        if user in seen:
+            raise ConfigError(f"SSH user {user} is listed more than once.")
+        seen.add(user)
+    accounts_needed = (use_gpus + 1) // 2
+    actual = min(use_gpus, len(users) * 2)
+    slots: list[dict[str, Any]] = []
+    remaining = actual
+    for user in users:
+        for _ in range(2):
+            if remaining == 0:
+                break
+            slots.append({"index": len(slots), "user": user, "gpus": 1})
+            remaining -= 1
+        if remaining == 0:
+            break
+    warnings: list[str] = []
+    if actual < use_gpus:
+        available = len(users)
+        if available == 1:
+            available_text = "1 account is available"
+        else:
+            available_text = f"{available} accounts are available"
+        warnings.append(
+            f"Warning: requested {use_gpus} GPUs ({accounts_needed} accounts). "
+            f"{available_text}. Starting {actual} GPUs."
+        )
+    if actual % 2 == 1:
+        warnings.append(
+            f"Warning: {slots[-1]['user']} has one GPU job. "
+            "One GPU slot on that account is unused."
+        )
+    return {
+        "requested_gpus": use_gpus,
+        "accounts_needed": accounts_needed,
+        "accounts_available": len(users),
+        "gpus": actual,
+        "warnings": warnings,
+        "slots": slots,
+    }
+
+
+def list_dataset_task_names(dataset: str, limit: int) -> list[str]:
+    """Return the first `limit` Harbor task names for a dataset."""
+    if not isinstance(dataset, str) or not dataset:
+        raise ConfigError("Dataset name is empty.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ConfigError("Task limit must be a positive integer.")
+    try:
+        import asyncio
+
+        from harbor.models.job.config import DatasetConfig
+    except ImportError as exc:
+        raise ConfigError(
+            "Harbor is not importable, so the fleet cannot list dataset tasks."
+        ) from exc
+
+    async def _load() -> list[str]:
+        configs = await DatasetConfig(name=dataset, n_tasks=limit).get_task_configs()
+        names: list[str] = []
+        for config in configs:
+            path = getattr(config, "path", None)
+            if path is None or not str(path):
+                raise ConfigError(f"Harbor returned a task without a path for {dataset}.")
+            names.append(Path(str(path)).name)
+        return names
+
+    try:
+        names = asyncio.run(_load())
+    except ConfigError:
+        raise
+    except Exception as exc:
+        raise ConfigError(f"Could not list tasks for {dataset}: {exc}") from exc
+    if not names:
+        raise ConfigError(f"Harbor returned no tasks for {dataset}.")
+    return names
+
+
 def summarize_harbor_tree(root: str) -> dict[str, Any]:
     base = Path(root)
     rewards = []
@@ -1061,6 +1229,7 @@ def _cli_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "context",
         "gpu_layers",
         "flash_attn",
+        "mmproj",
         "parallel",
         "port",
         "bind",
@@ -1087,6 +1256,7 @@ def _add_model_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--context")
     parser.add_argument("--gpu-layers")
     parser.add_argument("--flash-attn")
+    parser.add_argument("--mmproj", help="off skips the vision projector; auto or on loads it when -hf finds one")
     parser.add_argument("--parallel")
     parser.add_argument("--port")
     parser.add_argument("--bind")
@@ -1155,6 +1325,15 @@ def main(argv: list[str] | None = None) -> int:
     follow.add_argument("--verdict", required=True)
     summary = sub.add_parser("summarize-harbor")
     summary.add_argument("--root", required=True)
+    fleet = sub.add_parser("fleet-plan")
+    fleet.add_argument("--gpus", type=int, required=True)
+    fleet.add_argument("--user", action="append", required=True)
+    shard = sub.add_parser("shard-tasks")
+    shard.add_argument("--shards", type=int, required=True)
+    shard.add_argument("--names-file", required=True)
+    listed = sub.add_parser("list-tasks")
+    listed.add_argument("--dataset", required=True)
+    listed.add_argument("--n-tasks", type=int, required=True)
     sub.add_parser("dataset-note")
     sub.add_parser("profiles")
 
@@ -1231,6 +1410,18 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(dump(tool_followup(_load_json(args.resolved), _load_json(args.verdict))))
         elif args.cmd == "summarize-harbor":
             sys.stdout.write(dump(summarize_harbor_tree(args.root)))
+        elif args.cmd == "fleet-plan":
+            sys.stdout.write(dump(fleet_plan(args.gpus, list(args.user))))
+        elif args.cmd == "shard-tasks":
+            names = [
+                line.strip()
+                for line in Path(args.names_file).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            sys.stdout.write(dump(shard_names(names, args.shards)))
+        elif args.cmd == "list-tasks":
+            for name in list_dataset_task_names(args.dataset, args.n_tasks):
+                sys.stdout.write(name + "\n")
         elif args.cmd == "dataset-note":
             sys.stdout.write(dump({"note": DATASET_NOTE, "swebench_release": "unverified"}))
         elif args.cmd == "profiles":

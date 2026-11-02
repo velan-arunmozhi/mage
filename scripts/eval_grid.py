@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -233,8 +234,14 @@ def profile_alias(profile: str) -> str:
     return str(mage_scholar.PROFILES[profile]["model_alias"])
 
 
-def eval_host_argv(repo: Path, cell: Cell, allocation: Allocation) -> list[str]:
-    return [
+def eval_host_argv(
+    repo: Path,
+    cell: Cell,
+    allocation: Allocation,
+    use_gpus: int | None = None,
+    ssh_users: str | None = None,
+) -> list[str]:
+    argv = [
         "bash",
         str(repo / "scripts" / "eval-host"),
         "--setup-only",
@@ -259,6 +266,11 @@ def eval_host_argv(repo: Path, cell: Cell, allocation: Allocation) -> list[str]:
         "--time",
         allocation.time,
     ]
+    if use_gpus is not None:
+        argv.extend(["--use-gpus", str(use_gpus)])
+    if ssh_users:
+        argv.extend(["--ssh-users", ssh_users])
+    return argv
 
 
 def harbor_argv(
@@ -274,10 +286,16 @@ def harbor_argv(
     skills: Path,
     cache: Path | None,
     resolved: dict[str, Any],
+    shard: int | None = None,
+    shard_count: int = 1,
+    task_names: list[str] | None = None,
 ) -> list[str]:
     config = mage_scholar.render_opencode(base_url, resolved)
     config_line = json.dumps(config, separators=(",", ":"))
     job = f"mage-grid-{stage}-{dataset}-{condition}-{alias}-c{cell.context}-p{cell.parallel}"
+    if shard_count > 1 and shard is not None:
+        job = f"{job}-s{shard}"
+    task_count = len(task_names) if task_names else n_tasks
     if cache is not None and cache_ready(cache):
         agent_args = [
             "--agent",
@@ -288,7 +306,7 @@ def harbor_argv(
     else:
         agent_args = ["--agent", "opencode"]
     argv = [
-        "harbor",
+        str(Path(__file__).resolve().parent / "harbor-run"),
         "run",
         "--yes",
         *agent_args,
@@ -297,7 +315,7 @@ def harbor_argv(
         "--model",
         f"scholar/{alias}",
         "--n-tasks",
-        str(n_tasks),
+        str(task_count),
         "--n-concurrent",
         str(cell.parallel),
         "--job-name",
@@ -311,6 +329,9 @@ def harbor_argv(
         "--ae",
         f"OPENCODE_CONFIG_CONTENT={config_line}",
     ]
+    if task_names:
+        for name in task_names:
+            argv.extend(["--include-task-name", name])
     if condition == "mage":
         argv.extend(["--skill", str(skills)])
     return argv
@@ -323,6 +344,8 @@ def plan(
     allocation: Allocation,
     cache: Path | None,
     jobs_dir: Path,
+    use_gpus: int | None = None,
+    ssh_users: str | None = None,
 ) -> list[PlannedCell]:
     n_tasks = tasks_for(manifest, stage)
     skills = repo / ".agents" / "skills"
@@ -361,14 +384,18 @@ def plan(
                 index=index,
                 cell=cell,
                 alias=alias,
-                eval_host=eval_host_argv(repo, cell, allocation),
+                eval_host=eval_host_argv(repo, cell, allocation, use_gpus, ssh_users),
                 jobs=jobs,
             )
         )
     return planned
 
 
-def print_plan(cells: list[PlannedCell], cache_is_ready: bool) -> None:
+def print_plan(
+    cells: list[PlannedCell],
+    cache_is_ready: bool,
+    use_gpus: int | None = None,
+) -> None:
     if cache_is_ready:
         print(f"OpenCode cache mounted at {CACHE_IN_CONTAINER}. Trials skip nvm and npm when the pin matches.")
     else:
@@ -380,6 +407,11 @@ def print_plan(cells: list[PlannedCell], cache_is_ready: bool) -> None:
             f"parallel {cell.parallel} alias {planned.alias}"
         )
         print("  eval-host " + shlex.join(planned.eval_host))
+        if use_gpus is not None:
+            print(
+                f"  Fleet: {use_gpus} GPUs, two gpu:1 jobs per account. "
+                "Harbor tasks are split across the live servers."
+            )
         for job in planned.jobs:
             print(f"  harbor {job.dataset} {job.condition}")
             print("    " + shlex.join(job.argv))
@@ -572,8 +604,10 @@ def harbor_env(repo: Path) -> dict[str, str]:
     return env
 
 
-def wait_until_ready(server: ServerHandle, timeout: float) -> tuple[str, str]:
+def wait_until_ready(server: ServerHandle, timeout: float) -> tuple[str, list[str]]:
     run_dir = ""
+    urls: list[str] = []
+    expected: int | None = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         remaining = max(0.0, deadline - time.monotonic())
@@ -585,12 +619,37 @@ def wait_until_ready(server: ServerHandle, timeout: float) -> tuple[str, str]:
         sys.stdout.write(line if line.endswith("\n") else line + "\n")
         if line.startswith("Run directory: "):
             run_dir = line.split(":", 1)[1].strip()
+        if line.startswith("Fleet servers: "):
+            text = line.removeprefix("Fleet servers: ").strip()
+            if not text.isdigit() or int(text) < 1:
+                raise GridError(f"Bad fleet server count: {text!r}.")
+            expected = int(text)
         if line.startswith("Container base URL: "):
             base_url = line.removeprefix("Container base URL: ").strip()
             if not run_dir:
                 raise GridError("Container URL arrived before the run directory.")
-            return run_dir, base_url
+            urls.append(base_url)
+            if expected is None or len(urls) >= expected:
+                return run_dir, urls
     raise GridError(f"Timed out after {timeout:g}s waiting for the model server.")
+
+
+def list_dataset_task_names(dataset: str, limit: int) -> list[str]:
+    try:
+        return mage_scholar.list_dataset_task_names(dataset, limit)
+    except mage_scholar.ConfigError as exc:
+        raise GridError(str(exc)) from exc
+
+
+def load_fleet(run_dir: Path) -> list[dict[str, Any]]:
+    path = run_dir / "fleet.json"
+    if not path.is_file():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    slots = payload.get("slots") if isinstance(payload, dict) else None
+    if not isinstance(slots, list):
+        return []
+    return [slot for slot in slots if isinstance(slot, dict)]
 
 
 class SubprocessServer:
@@ -687,27 +746,46 @@ def run_cell(
     summary_path = grid_dir / f"cell-{planned.index}.json"
     server = io.start_server(planned.eval_host)
     status = "ok"
-    sampler: SlotSampler | None = None
+    samplers: list[SlotSampler] = []
     try:
-        run_dir, base_url = wait_until_ready(server, startup_timeout)
+        run_dir, base_urls = wait_until_ready(server, startup_timeout)
+        base_url = base_urls[0]
         summary["run_dir"] = run_dir
         summary["base_url"] = base_url
+        summary["base_urls"] = base_urls
         summary["timing"]["server_ready_sec"] = round(time.monotonic() - started, 3)
         print(f"Timing: server ready in {summary['timing']['server_ready_sec']:.1f}s")
-        tunnel = parse_tunnel((Path(run_dir) / "tunnel.txt").read_text(encoding="utf-8"))
-        model_ssh = tunnel.get("model_ssh", "")
-        jump = tunnel.get("jump", allocation.jump)
-        if not model_ssh:
-            raise GridError(f"tunnel.txt in {run_dir} has no model_ssh.")
-        job_id = ""
-        state_path = Path(run_dir) / "state.json"
-        if state_path.is_file():
-            try:
-                job_id = str(json.loads(state_path.read_text(encoding="utf-8")).get("job_id") or "")
-            except json.JSONDecodeError:
-                job_id = ""
-        current = io.memory_bytes(jump, model_ssh, job_id)
-        action, reason = memory_decision(current, cell.parallel, manifest.memory_stop_gib)
+        fleet_slots = load_fleet(Path(run_dir))
+        tunnel: dict[str, str] = {}
+        if not fleet_slots:
+            tunnel = parse_tunnel((Path(run_dir) / "tunnel.txt").read_text(encoding="utf-8"))
+            model_ssh = tunnel.get("model_ssh", "")
+            jump = tunnel.get("jump", allocation.jump)
+            if not model_ssh:
+                raise GridError(f"tunnel.txt in {run_dir} has no model_ssh.")
+            job_id = ""
+            state_path = Path(run_dir) / "state.json"
+            if state_path.is_file():
+                try:
+                    job_id = str(json.loads(state_path.read_text(encoding="utf-8")).get("job_id") or "")
+                except json.JSONDecodeError:
+                    job_id = ""
+            fleet_slots = [
+                {"model_ssh": model_ssh, "jump": jump, "job_id": job_id, "local_port": tunnel.get("local_port", "")}
+            ]
+        current = None
+        action = "run"
+        reason = ""
+        for slot in fleet_slots:
+            model_ssh = str(slot.get("model_ssh") or "")
+            jump = str(slot.get("jump") or allocation.jump)
+            job_id = str(slot.get("job_id") or "")
+            if not model_ssh:
+                raise GridError(f"A fleet slot in {run_dir} has no model_ssh.")
+            current = io.memory_bytes(jump, model_ssh, job_id)
+            action, reason = memory_decision(current, cell.parallel, manifest.memory_stop_gib)
+            if action == "stop":
+                break
         summary["memory_bytes"] = current
         summary["memory_action"] = action
         summary["memory_reason"] = reason
@@ -716,51 +794,116 @@ def run_cell(
         if action == "stop":
             status = "memory"
             return status
-        local_port = tunnel.get("local_port", "")
-        if local_port.isdigit():
-            sampler = SlotSampler(f"http://127.0.0.1:{local_port}/slots")
-            sampler.start()
+        for slot in fleet_slots:
+            local_port = str(slot.get("local_port") or "")
+            if local_port.isdigit():
+                slot_sampler = SlotSampler(f"http://127.0.0.1:{local_port}/slots")
+                slot_sampler.start()
+                samplers.append(slot_sampler)
         resolved = json.loads((Path(run_dir) / "resolved-config.json").read_text(encoding="utf-8"))
         alias = str(resolved["model_alias"])
         skills = repo / ".agents" / "skills"
         n_tasks = tasks_for(manifest, stage)
         env = harbor_env(repo)
         for dataset in manifest.datasets:
+            groups: list[list[str]] | None = None
+            if len(base_urls) > 1:
+                groups = mage_scholar.shard_names(
+                    list_dataset_task_names(dataset, n_tasks),
+                    len(base_urls),
+                )
             for condition in CONDITIONS:
-                argv = harbor_argv(
-                    cell=cell,
-                    dataset=dataset,
-                    condition=condition,
-                    alias=alias,
-                    base_url=base_url,
-                    n_tasks=n_tasks,
-                    jobs_dir=grid_dir / "harbor",
-                    stage=stage,
-                    skills=skills,
-                    cache=cache,
-                    resolved=resolved,
-                )
-                print(f"Harbor {dataset} {condition} n-tasks {n_tasks} n-concurrent {cell.parallel}")
+                if groups is None:
+                    argv = harbor_argv(
+                        cell=cell,
+                        dataset=dataset,
+                        condition=condition,
+                        alias=alias,
+                        base_url=base_url,
+                        n_tasks=n_tasks,
+                        jobs_dir=grid_dir / "harbor",
+                        stage=stage,
+                        skills=skills,
+                        cache=cache,
+                        resolved=resolved,
+                    )
+                    print(f"Harbor {dataset} {condition} n-tasks {n_tasks} n-concurrent {cell.parallel}")
+                    job_started = time.monotonic()
+                    code = io.run_harbor(argv, env)
+                    wall = round(time.monotonic() - job_started, 3)
+                    print(f"Timing: harbor {dataset} {condition} {wall:.1f}s exit {code}")
+                    summary["jobs"].append(
+                        {
+                            "dataset": dataset,
+                            "condition": condition,
+                            "exit_code": code,
+                            "wall_sec": wall,
+                            "n_tasks": n_tasks,
+                            "n_concurrent": cell.parallel,
+                        }
+                    )
+                    if code != 0:
+                        status = "harbor"
+                    continue
+                shard_argvs: list[tuple[int, list[str], list[str]]] = []
+                for index, names in enumerate(groups):
+                    if not names:
+                        print(f"Warning: slot {index} has no tasks for {dataset} {condition}.")
+                        continue
+                    shard_argvs.append(
+                        (
+                            index,
+                            names,
+                            harbor_argv(
+                                cell=cell,
+                                dataset=dataset,
+                                condition=condition,
+                                alias=alias,
+                                base_url=base_urls[index],
+                                n_tasks=len(names),
+                                jobs_dir=grid_dir / "harbor",
+                                stage=stage,
+                                skills=skills,
+                                cache=cache,
+                                resolved=resolved,
+                                shard=index,
+                                shard_count=len(base_urls),
+                                task_names=names,
+                            ),
+                        )
+                    )
                 job_started = time.monotonic()
-                code = io.run_harbor(argv, env)
-                wall = round(time.monotonic() - job_started, 3)
-                print(f"Timing: harbor {dataset} {condition} {wall:.1f}s exit {code}")
-                summary["jobs"].append(
-                    {
-                        "dataset": dataset,
-                        "condition": condition,
-                        "exit_code": code,
-                        "wall_sec": wall,
-                        "n_tasks": n_tasks,
-                        "n_concurrent": cell.parallel,
-                    }
-                )
-                if code != 0:
-                    status = "harbor"
+                with ThreadPoolExecutor(max_workers=max(1, len(shard_argvs))) as pool:
+                    futures = [
+                        (index, names, pool.submit(io.run_harbor, argv, env))
+                        for index, names, argv in shard_argvs
+                    ]
+                    for index, names, future in futures:
+                        code = future.result()
+                        wall = round(time.monotonic() - job_started, 3)
+                        print(
+                            f"Timing: harbor {dataset} {condition} shard {index} "
+                            f"{wall:.1f}s exit {code}"
+                        )
+                        summary["jobs"].append(
+                            {
+                                "dataset": dataset,
+                                "condition": condition,
+                                "shard": index,
+                                "exit_code": code,
+                                "wall_sec": wall,
+                                "n_tasks": len(names),
+                                "n_concurrent": cell.parallel,
+                            }
+                        )
+                        if code != 0:
+                            status = "harbor"
         return status
     finally:
-        if sampler is not None:
-            samples = sampler.stop()
+        if samplers:
+            samples: list[dict[str, Any]] = []
+            for item in samplers:
+                samples.extend(item.stop())
             slots_path = grid_dir / f"cell-{planned.index}-slots.jsonl"
             slots_path.write_text(
                 "".join(json.dumps(sample) + "\n" for sample in samples),
@@ -786,12 +929,23 @@ def execute(
     io: GridIO,
     startup_timeout: float,
     only: str | None,
+    use_gpus: int | None = None,
+    ssh_users: str | None = None,
 ) -> int:
     skills = repo / ".agents" / "skills"
     if not skills.is_dir():
         print(f"Missing skills directory: {skills}", file=sys.stderr)
         return 2
-    selected = plan(manifest, stage, repo, allocation, cache, state_dir / "harbor")
+    selected = plan(
+        manifest,
+        stage,
+        repo,
+        allocation,
+        cache,
+        state_dir / "harbor",
+        use_gpus,
+        ssh_users,
+    )
     if only is not None:
         selected = _filter_cells(selected, only)
         if not selected:
@@ -876,6 +1030,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--account", default=None)
     parser.add_argument("--partition", default=None)
     parser.add_argument("--gpus", type=int, default=None)
+    parser.add_argument(
+        "--use-gpus",
+        type=int,
+        default=None,
+        help="Fleet size. eval-host starts one gpu:1 server per GPU, two per account.",
+    )
+    parser.add_argument(
+        "--ssh-users",
+        default=None,
+        help="Space-separated Scholar accounts. Overrides MAGE_SSH_USERS.",
+    )
     parser.add_argument("--cpus", type=int, default=None)
     parser.add_argument("--mem", default=None)
     parser.add_argument("--time", default=None)
@@ -901,6 +1066,9 @@ def main(argv: list[str] | None = None) -> int:
             cells=manifest.cells,
             allocation=manifest.allocation,
         )
+    if args.use_gpus is not None and args.use_gpus < 1:
+        print("--use-gpus must be a positive integer.", file=sys.stderr)
+        return 2
     allocation = _apply_overrides(manifest, args)
     request_gib = _mem_gib(allocation.mem)
     if request_gib is not None and manifest.memory_stop_gib >= request_gib:
@@ -913,7 +1081,16 @@ def main(argv: list[str] | None = None) -> int:
     ready = cache_ready(cache)
     if args.dry_run:
         try:
-            cells = plan(manifest, args.stage, ROOT, allocation, cache, Path("<grid>/harbor"))
+            cells = plan(
+                manifest,
+                args.stage,
+                ROOT,
+                allocation,
+                cache,
+                Path("<grid>/harbor"),
+                args.use_gpus,
+                args.ssh_users,
+            )
             cells = _filter_cells(cells, args.only) if args.only else cells
         except GridError as exc:
             print(str(exc), file=sys.stderr)
@@ -921,7 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.only and not cells:
             print(f"No cell matches {args.only!r}.", file=sys.stderr)
             return 2
-        print_plan(cells, ready)
+        print_plan(cells, ready, args.use_gpus)
         return 0
     state_parent = args.state_dir
     if state_parent is None:
@@ -938,6 +1115,8 @@ def main(argv: list[str] | None = None) -> int:
             io=LiveIO(ROOT),
             startup_timeout=args.startup_timeout,
             only=args.only,
+            use_gpus=args.use_gpus,
+            ssh_users=args.ssh_users,
         )
     except GridError as exc:
         print(str(exc), file=sys.stderr)

@@ -1,0 +1,26 @@
+  12/12 Mean: 0.083 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2:41:41 0:00:00
+
+swebenchpro • opencode • gpt-oss-20b
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┓
+┃ Trials ┃ Exceptions ┃  Mean ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━┩
+│     12 │          0 │ 0.083 │
+└────────┴────────────┴───────┘
+
+┏━━━━━━━━┳━━━━━━━┓
+┃ Reward ┃ Count ┃
+┡━━━━━━━━╇━━━━━━━┩
+│ 1.0    │     1 │
+│ 0.0    │    11 │
+└────────┴───────┘
+
+Job Info
+Total runtime: 2h 41m 40s
+Results written to 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-gpt-medium-load/result.jso
+n
+Inspect results by running `harbor view 
+/home/aj/mage/gb10-inference-bench/harbor-jobs`
+Share results by running `harbor upload 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-gpt-medium-load`
+

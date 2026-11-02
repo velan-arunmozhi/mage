@@ -11,7 +11,7 @@ EVAL="${ROOT}/scripts/eval-host"
 PY="${ROOT}/scripts/lib/mage_scholar.py"
 
 unset MAGE_MODEL_PROFILE MAGE_MODEL_HF MAGE_MODEL_FILE MAGE_MODEL_ALIAS MAGE_MODEL_REVISION \
-  MAGE_CONTEXT MAGE_GPU_LAYERS MAGE_FLASH_ATTN MAGE_PARALLEL MAGE_PORT MAGE_BIND \
+  MAGE_CONTEXT MAGE_GPU_LAYERS MAGE_FLASH_ATTN MAGE_MMPROJ MAGE_PARALLEL MAGE_PORT MAGE_BIND \
   MAGE_CUDA_MANAGED MAGE_OUTPUT_LIMIT MAGE_SMOKE_MAX_TOKENS MAGE_REASONING \
   MAGE_TEMPERATURE MAGE_LLAMA_EXTRA MAGE_SCRATCH MAGE_LLAMA_SRC MAGE_LLAMA_BIN \
   GGML_CUDA_ENABLE_UNIFIED_MEMORY CUDA_ROOT MAGE_CUDA_ROOT MAGE_GPU_NAME \
@@ -55,7 +55,15 @@ bash "$EVAL" help >/dev/null
 plan="$(bash "$SESSION" plan --model-profile qwen36-35b)"
 grep -q "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M" <<< "$plan" || fail "plan omitted the Qwen3.6 reference"
 grep -q "131072" <<< "$plan" || fail "plan omitted 131072 context"
-grep -q -- "-fa off" <<< "$plan" || fail "plan did not keep Flash Attention off for qwen36"
+grep -q -- "-fa on" <<< "$plan" || fail "plan did not request Flash Attention on for qwen36"
+grep -q -- "--no-mmproj" <<< "$plan" || fail "plan did not skip the vision projector"
+
+default_plan="$(bash "$SESSION" plan)"
+grep -q "unsloth/Qwen3.5-2B-GGUF:Q4_K_M" <<< "$default_plan" || fail "default plan omitted Qwen3.5-2B"
+grep -q "qwen35-2b" <<< "$default_plan" || fail "default plan omitted the qwen35-2b alias"
+grep -q "131072" <<< "$default_plan" || fail "default plan omitted 131072 context"
+grep -q -- "-fa on" <<< "$default_plan" || fail "default plan did not request Flash Attention on"
+grep -q -- "--no-mmproj" <<< "$default_plan" || fail "default plan loaded a vision projector"
 grep -q "Dry run" <<< "$plan" || fail "plan did not say it was a dry run"
 
 custom="$(bash "$SESSION" plan --model-hf org/Custom-GGUF:Q4_K_M --model-alias custom --context 2048 --output-limit 256 --smoke-max-tokens 64)"
@@ -63,6 +71,8 @@ grep -q "org/Custom-GGUF:Q4_K_M" <<< "$custom" || fail "custom model did not rea
 grep -q -- "-c 2048" <<< "$custom" || fail "custom context did not reach the argv"
 argv_line="$(printf '%s\n' "$custom" | awk 'found {print; exit} /llama-server argv:/ {found=1}')"
 grep -q "Qwen3-4B" <<< "$argv_line" && fail "custom argv fell back to Qwen3-4B"
+grep -q "Qwen3.5-2B" <<< "$argv_line" && fail "custom argv fell back to Qwen3.5-2B"
+grep -q -- "--no-mmproj" <<< "$argv_line" || fail "custom argv loaded a vision projector"
 
 set +e
 bad="$(bash "$SESSION" plan --model-hf 'org/name;rm' --model-alias bad 2>&1)"
@@ -428,5 +438,109 @@ chmod +x "${tmp}/bin/git"
   [[ "$status" -ne 0 ]] || fail "failed fetch returned a path: ${got}"
   [[ "$got" != *Initialized* ]] || fail "git init stdout leaked into the llama path: ${got}"
 )
+
+fleet_common=(
+  --dry-run --model-profile qwen36-35b --context 131072
+  --jump scholar.example --partition spark-batch --account scholar
+  --cpus 20 --mem 100G --time 04:00:00 --condition both --n-tasks 4
+)
+: >"$ssh_log"
+PATH="${tmp}:${PATH}" MAGE_SSH="${tmp}/ssh" MAGE_SBATCH="${tmp}/sbatch" MAGE_STATE_DIR="$state" \
+  bash "$EVAL" "${fleet_common[@]}" --use-gpus 4 --ssh-users "billin19 sbelgal lu1184" \
+  >"${tmp}/fleet.txt" 2>&1
+grep -q "Dry run: no sbatch, ssh, docker, model download, or Harbor job was started." "${tmp}/fleet.txt" || fail "fleet dry-run did not stay local"
+grep -q "Fleet accounts (unprobed): billin19 sbelgal" "${tmp}/fleet.txt" || fail "fleet dry-run picked the wrong accounts: $(cat "${tmp}/fleet.txt")"
+[[ "$(grep -c '#SBATCH --gres=gpu:1' "${tmp}/fleet.txt")" -eq 4 ]] || fail "fleet dry-run did not render four gpu:1 jobs"
+grep -q "Harbor shard baseline slot 0: 1 task(s)" "${tmp}/fleet.txt" || fail "fleet dry-run omitted shard counts"
+if grep -q "Fleet slot .*user=lu1184" "${tmp}/fleet.txt"; then
+  fail "fleet dry-run used an account past the quota"
+fi
+[[ ! -s "$ssh_log" ]] || fail "fleet dry-run invoked ssh or sbatch: $(cat "$ssh_log")"
+
+PATH="${tmp}:${PATH}" MAGE_SSH="${tmp}/ssh" MAGE_STATE_DIR="$state" \
+  bash "$EVAL" "${fleet_common[@]}" --use-gpus 3 --ssh-users "billin19 sbelgal" \
+  >"${tmp}/fleet-odd.txt" 2>&1
+grep -q "One GPU slot on that account is unused" "${tmp}/fleet-odd.txt" || fail "odd fleet did not warn"
+[[ "$(grep -c '#SBATCH --gres=gpu:1' "${tmp}/fleet-odd.txt")" -eq 3 ]] || fail "odd fleet did not render three jobs"
+grep -q "user=sbelgal" "${tmp}/fleet-odd.txt" || fail "odd fleet dropped the second account"
+
+set +e
+bad_gpus="$(PATH="${tmp}:${PATH}" MAGE_SSH="${tmp}/ssh" MAGE_STATE_DIR="$state" \
+  bash "$EVAL" "${fleet_common[@]}" --use-gpus 4 --gpus 2 --ssh-users "billin19" 2>&1)"
+bad_gpus_status=$?
+set -e
+[[ "$bad_gpus_status" -ne 0 ]] || fail "fleet accepted --gpus 2"
+grep -q "one GPU each" <<< "$bad_gpus" || fail "fleet --gpus 2 refusal was unclear"
+
+users_file="${tmp}/users.env"
+printf '%s\n' 'MAGE_SSH_USERS="other1 other2"' >"$users_file"
+PATH="${tmp}:${PATH}" MAGE_SSH="${tmp}/ssh" MAGE_STATE_DIR="$state" \
+  MAGE_SSH_USERS_FILE="$users_file" \
+  bash "$EVAL" "${fleet_common[@]}" --use-gpus 2 --ssh-users "aa bb" \
+  >"${tmp}/fleet-cli.txt" 2>&1
+grep -q "Fleet accounts (unprobed): aa" "${tmp}/fleet-cli.txt" || fail "CLI users did not override the env file"
+grep -q "other1" "${tmp}/fleet-cli.txt" && fail "env file users leaked past --ssh-users"
+
+PATH="${tmp}:${PATH}" MAGE_SSH="${tmp}/ssh" MAGE_STATE_DIR="$state" \
+  bash "$EVAL" "${fleet_common[@]}" --use-gpus 2 \
+  >"${tmp}/fleet-dotenv.txt" 2>&1
+grep -q "Fleet accounts (unprobed): billin19" "${tmp}/fleet-dotenv.txt" || fail "repo .env users were not read"
+
+(
+  # shellcheck source=../eval-host
+  source "$EVAL"
+  SSH_BASE=(-o ConnectTimeout=20)
+  cat >"${tmp}/ssh-probe" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "${tmp}/probe.log"
+if [[ "\$*" == *billin19@* ]]; then
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "${tmp}/ssh-probe"
+  : >"${tmp}/probe.log"
+  MAGE_SSH="${tmp}/ssh-probe"
+  mage_probe_ssh_users "scholar.example" 2 billin19 sbelgal lu1184 gandh105
+  [[ "${PROBED_USERS[*]}" == "sbelgal lu1184" ]] || fail "probe kept the wrong accounts: ${PROBED_USERS[*]}"
+  grep -q "gandh105" "${tmp}/probe.log" && fail "probe continued after it had enough accounts"
+  grep -q "billin19" "${tmp}/probe.log" || fail "probe skipped the failing account"
+)
+set +e
+probe_warn="$(
+  source "$EVAL"
+  SSH_BASE=(-o ConnectTimeout=20)
+  MAGE_SSH="${tmp}/ssh-probe"
+  mage_probe_ssh_users "scholar.example" 1 billin19 sbelgal 2>&1
+)"
+set -e
+grep -q "Warning: SSH login failed for billin19@scholar.example" <<< "$probe_warn" || fail "failed login was not a warning: ${probe_warn}"
+
+set +e
+none="$(
+  source "$EVAL"
+  SSH_BASE=(-o ConnectTimeout=20)
+  cat >"${tmp}/ssh-none" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "${tmp}/ssh-none"
+  MAGE_SSH="${tmp}/ssh-none"
+  mage_probe_ssh_users "scholar.example" 2 billin19 sbelgal 2>&1
+)"
+none_status=$?
+set -e
+[[ "$none_status" -ne 0 ]] || fail "a roster of failed logins continued"
+grep -q "No Scholar account accepted SSH" <<< "$none" || fail "empty roster did not refuse to submit: ${none}"
+
+set +e
+bad_name="$(
+  source "$EVAL"
+  mage_ssh_user_list "billin19 bad;rm" 2>&1
+)"
+bad_name_status=$?
+set -e
+[[ "$bad_name_status" -ne 0 ]] || fail "malicious SSH user was accepted"
+grep -q "Refusing SSH user" <<< "$bad_name" || fail "malicious SSH user was not explained"
 
 echo "scholar pipeline tests passed"

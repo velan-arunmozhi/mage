@@ -13,6 +13,12 @@
 #     --jump USER@scholar.rcac.purdue.edu --partition spark-batch --account scholar \
 #     --gpus 1 --cpus 20 --mem 100G --time 02:00:00 --condition both --n-tasks 1
 #
+# Several accounts, two gpu:1 jobs each. --use-gpus is the fleet size.
+# Usernames come from --ssh-users or MAGE_SSH_USERS in the repo .env file.
+#   bash scripts/eval-host --model-profile qwen36-35b --context 131072 \
+#     --jump scholar.rcac.purdue.edu --partition spark-batch --account scholar \
+#     --cpus 20 --mem 100G --time 02:00:00 --use-gpus 4 --condition both --n-tasks 4
+#
 # Dry run (no GPU, SSH, download, or Harbor job):
 #   bash scripts/eval-host --dry-run --model-profile qwen36-35b --context 131072 \
 #     --partition spark-batch --account scholar --gpus 1 --cpus 20 --mem 100G --time 02:00:00
@@ -54,11 +60,21 @@ CPUS=""
 MEM=""
 WALL=""
 QOS=""
+USE_GPUS=""
+SSH_USERS_ARG=""
 COMMAND=""
 TASK_IDS=()
 TUNNEL_PIDS=()
 OWNED_JOB_ID=""
 OWNED_JOB_NAME=""
+FLEET_USERS=()
+FLEET_JUMPS=()
+FLEET_PORTS=()
+FLEET_JOB_IDS=()
+FLEET_JOB_NAMES=()
+FLEET_REMOTE_RUNS=()
+FLEET_MODEL_SSH=()
+FLEET_URLS=()
 CLEANED=0
 STATE_DIR="${MAGE_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/mage-eval}"
 SSH_BASE=(-o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ConnectTimeout=20)
@@ -78,11 +94,22 @@ Choose one allocation mode explicitly:
                                 --cpus, --mem, and --time. From an AMD64 host
                                 pass --jump USER@LOGIN. A login node with sbatch
                                 can omit --jump.
+  --use-gpus N                  Fleet size. Submits one gpu:1 job per GPU,
+                                two jobs per Scholar account. Needs --jump,
+                                --account, --partition, --cpus, --mem, and
+                                --time. --gpus stays the single-job size and
+                                must be 1 or omitted in this mode.
+  --ssh-users "a b"             Accounts to probe, in order. Overrides
+                                MAGE_SSH_USERS in the repo .env file. A failed
+                                login is a warning. The run stops only when
+                                every probed account fails.
   --model-url URL               Use an OpenAI-compatible URL and skip SSH.
 
 Model options match scripts/scholar-session. CLI overrides environment, then
-the profile, then the legacy Qwen3-4B / 8192 default. The recommended pilot is
---model-profile qwen36-35b. qwen30b-diagnostic is refused unless
+the profile, then the default unsloth/Qwen3.5-2B-GGUF:Q4_K_M at context
+131072 with Flash Attention on and --no-mmproj. A benchmark needs at least
+65536 tokens of context. --model-profile qwen35-2b is that
+model. Qwen3-4B remains smoke-4b. qwen30b-diagnostic is refused unless
 --allow-not-ready is set for an investigation.
 
 Other options:
@@ -118,6 +145,8 @@ same model, context, budget, and task selection. Harbor job names include a
 configuration fingerprint, so a different model or context does not resume an
 older job. The same fingerprint can resume.
 
+Harbor benchmark launches use a two-hour agent timeout. That replaces the
+timeout written in the task file. The verifier keeps the task file's timeout.
 A two-hour GPU allocation may be too short for a full SWE-bench Pro run.
 Re-running the same configuration resumes Harbor and can use a later allocation.
 EOF
@@ -131,9 +160,16 @@ cleanup() {
       wait "${pid}" 2>/dev/null || true
     fi
   done
-  if [[ "$CLEANED" -eq 0 && "$KEEP_ALLOCATION" -eq 0 && -n "$OWNED_JOB_ID" ]]; then
+  if [[ "$CLEANED" -eq 0 && "$KEEP_ALLOCATION" -eq 0 ]]; then
     CLEANED=1
-    mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "${JUMP}" || true
+    if [[ ${#FLEET_JOB_IDS[@]} -gt 0 ]]; then
+      local index
+      for index in "${!FLEET_JOB_IDS[@]}"; do
+        mage_cancel_owned_job "${FLEET_JOB_IDS[$index]}" "${FLEET_JOB_NAMES[$index]}" "${FLEET_JUMPS[$index]}" || true
+      done
+    elif [[ -n "$OWNED_JOB_ID" ]]; then
+      mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "${JUMP}" || true
+    fi
   fi
 }
 on_signal() {
@@ -176,6 +212,8 @@ parse_args() {
       --account) mage_require_value "$1" "${2:-}"; ACCOUNT="$2"; shift 2 ;;
       --partition) mage_require_value "$1" "${2:-}"; PARTITION="$2"; shift 2 ;;
       --gpus) mage_require_value "$1" "${2:-}"; GPUS="$2"; shift 2 ;;
+      --use-gpus) mage_require_value "$1" "${2:-}"; USE_GPUS="$2"; shift 2 ;;
+      --ssh-users) mage_require_value "$1" "${2:-}"; SSH_USERS_ARG="$2"; shift 2 ;;
       --cpus) mage_require_value "$1" "${2:-}"; CPUS="$2"; shift 2 ;;
       --mem) mage_require_value "$1" "${2:-}"; MEM="$2"; shift 2 ;;
       --time) mage_require_value "$1" "${2:-}"; WALL="$2"; shift 2 ;;
@@ -212,9 +250,15 @@ parse_args() {
   [[ "$N_TASKS" =~ ^[0-9]+$ && "$N_TASKS" -ge 1 ]] || mage_die "--n-tasks must be a positive integer."
   [[ "$LOCAL_PORT" =~ ^[0-9]+$ ]] || mage_die "--local-port must be an integer."
   [[ "$STARTUP_TIMEOUT" =~ ^[0-9]+$ ]] || mage_die "--startup-timeout must be an integer."
+  if [[ -n "$USE_GPUS" ]]; then
+    [[ "$USE_GPUS" =~ ^[0-9]+$ && "$USE_GPUS" -ge 1 ]] || mage_die "--use-gpus must be a positive integer."
+  fi
 }
 
 select_mode() {
+  if [[ -n "$USE_GPUS" && ( -n "$MODEL_SSH" || -n "$MODEL_URL" || "$NO_SUBMIT" -eq 1 ) ]]; then
+    mage_die "--use-gpus submits one gpu:1 job per GPU. Omit --model-ssh, --model-url, and --no-submit."
+  fi
   if [[ -n "$MODEL_URL" && ( -n "$MODEL_SSH" || -n "$ACCOUNT" || -n "$PARTITION" ) ]]; then
     mage_die "--model-url does not submit or attach to a Scholar allocation."
   fi
@@ -231,6 +275,18 @@ select_mode() {
   fi
   if [[ -n "$MODEL_SSH" ]]; then
     MODE="manual"
+    return 0
+  fi
+  if [[ -n "$USE_GPUS" ]]; then
+    [[ -n "$ACCOUNT" && -n "$PARTITION" ]] || mage_die "Fleet submission needs both --account and --partition."
+    [[ -n "$JUMP" ]] || mage_die "Fleet submission needs --jump LOGIN so each account can be probed."
+    [[ -n "$CPUS" && -n "$MEM" && -n "$WALL" ]] || mage_die "Fleet submission needs --cpus, --mem, and --time."
+    if [[ -z "$GPUS" ]]; then
+      GPUS=1
+    elif [[ "$GPUS" != "1" ]]; then
+      mage_die "Fleet jobs request one GPU each. Pass --gpus 1 or omit --gpus. --use-gpus is the fleet size."
+    fi
+    MODE="batch"
     return 0
   fi
   if [[ -n "$ACCOUNT" || -n "$PARTITION" ]]; then
@@ -299,22 +355,43 @@ cmd_status() {
     return 0
   fi
   cat "$current"
-  local job_id=""
-  job_id="$(mage_python -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("job_id") or "")' "$current" || true)"
-  if [[ -z "$job_id" ]]; then
+  local rows=""
+  rows="$(mage_python -c 'import json,sys
+payload=json.load(open(sys.argv[1],encoding="utf-8"))
+jobs=payload.get("jobs")
+rows=jobs if isinstance(jobs, list) and jobs else [{
+    "job_id": payload.get("job_id") or "",
+    "job_name": payload.get("job_name") or "",
+    "jump": payload.get("jump") or "",
+    "user": "",
+}]
+for job in rows:
+    print("\t".join([
+        str(job.get("job_id") or ""),
+        str(job.get("job_name") or ""),
+        str(job.get("jump") or ""),
+        str(job.get("user") or ""),
+    ]))' "$current" || true)"
+  if [[ -z "$rows" ]]; then
     echo "queue: no job id recorded"
     return 0
   fi
-  local job_name jump state=""
-  job_name="$(mage_python -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("job_name") or "")' "$current")"
-  jump="$(mage_python -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("jump") or "")' "$current")"
-  if [[ -n "$jump" ]]; then
-    state="$("${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "$jump" "${MAGE_SQUEUE:-squeue} -j ${job_id} -h -o %T" 2>/dev/null || true)"
-  elif command -v "${MAGE_SQUEUE:-squeue}" >/dev/null 2>&1; then
-    state="$("${MAGE_SQUEUE:-squeue}" -j "$job_id" -h -o "%T" 2>/dev/null || true)"
-  fi
-  echo "queue: ${state:-not-queued}"
-  echo "owned job name: ${job_name}"
+  local job_id job_name jump user state line
+  while IFS=$'\t' read -r job_id job_name jump user; do
+    [[ -n "$job_id" ]] || continue
+    state=""
+    if [[ -n "$jump" ]]; then
+      state="$("${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "$jump" "${MAGE_SQUEUE:-squeue} -j ${job_id} -h -o %T" 2>/dev/null || true)"
+    elif command -v "${MAGE_SQUEUE:-squeue}" >/dev/null 2>&1; then
+      state="$("${MAGE_SQUEUE:-squeue}" -j "$job_id" -h -o "%T" 2>/dev/null || true)"
+    fi
+    if [[ -n "$user" ]]; then
+      echo "queue ${user} job ${job_id}: ${state:-not-queued}"
+    else
+      echo "queue: ${state:-not-queued}"
+    fi
+    echo "owned job name: ${job_name}"
+  done <<< "$rows"
 }
 
 cmd_stop() {
@@ -326,6 +403,26 @@ cmd_stop() {
   owned="$(mage_json_get "$current" owned)"
   jump="$(mage_json_get "$current" jump)"
   [[ "$owned" == "true" ]] || mage_die "The recorded run is not marked owned. Refusing to cancel ${job_id}."
+  local rows=""
+  rows="$(mage_python -c 'import json,sys
+payload=json.load(open(sys.argv[1],encoding="utf-8"))
+jobs=payload.get("jobs")
+if not isinstance(jobs, list) or not jobs:
+    raise SystemExit(0)
+for job in jobs:
+    print("\t".join([
+        str(job.get("job_id") or ""),
+        str(job.get("job_name") or ""),
+        str(job.get("jump") or ""),
+    ]))' "$current")"
+  if [[ -n "$rows" ]]; then
+    local line
+    while IFS=$'\t' read -r job_id job_name jump; do
+      [[ -n "$job_id" ]] || mage_die "A recorded fleet job has no SLURM job id."
+      mage_cancel_owned_job "$job_id" "$job_name" "$jump"
+    done <<< "$rows"
+    return 0
+  fi
   [[ -n "$job_id" ]] || mage_die "The recorded run has no SLURM job id."
   JUMP="$jump"
   mage_cancel_owned_job "$job_id" "$job_name" "$jump"
@@ -334,18 +431,25 @@ cmd_stop() {
 ssh_to() {
   local target="$1"
   shift
-  local -a jump_args=()
+  local -a jump_args=() batch_args=()
   if [[ -n "$JUMP" && "$target" != "$JUMP" ]]; then
     jump_args=(-J "$JUMP")
   fi
-  "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${jump_args[@]}" "$target" "$@"
+  if [[ "${MAGE_SSH_BATCH:-0}" == "1" ]]; then
+    batch_args=(-o BatchMode=yes)
+  fi
+  "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${batch_args[@]}" "${jump_args[@]}" "$target" "$@"
 }
 
 scp_to() {
   local src="$1"
   local target="$2"
   local path="$3"
-  "${MAGE_SCP:-scp}" "${SSH_BASE[@]}" "$src" "${target}:${path}"
+  local -a batch_args=()
+  if [[ "${MAGE_SSH_BATCH:-0}" == "1" ]]; then
+    batch_args=(-o BatchMode=yes)
+  fi
+  "${MAGE_SCP:-scp}" "${SSH_BASE[@]}" "${batch_args[@]}" "$src" "${target}:${path}"
 }
 
 upload_launcher() {
@@ -362,6 +466,9 @@ remote_home() {
   local -a jump_args=()
   if [[ -n "$JUMP" && "$target" != "$JUMP" ]]; then
     jump_args=(-J "$JUMP")
+  fi
+  if [[ "${MAGE_SSH_BATCH:-0}" == "1" ]]; then
+    jump_args+=(-o BatchMode=yes)
   fi
   "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${jump_args[@]}" "$target" bash --noprofile --norc -s <<'EOF'
 if [[ -z ${HOME:-} || ! -d ${HOME:-} ]]; then
@@ -391,9 +498,13 @@ start_manual_server() {
 render_batch() {
   local remote_run="$1"
   local launcher="$2"
-  local alloc="${RUN_DIR}/allocation-request.json"
+  local sbatch_out="${3:-${RUN_DIR}/serve.sbatch}"
+  local job_name="${4:-mage-${RUN_ID}}"
+  local gpus="${5:-$GPUS}"
+  local run_token="${6:-$RUN_ID}"
+  local alloc="${7:-${RUN_DIR}/allocation-request.json}"
   mage_python -c 'import json,sys; json.dump({"account":sys.argv[1],"partition":sys.argv[2],"gpus":int(sys.argv[3]),"cpus":int(sys.argv[4]),"mem":sys.argv[5],"time":sys.argv[6],"qos":sys.argv[7],"job_name":sys.argv[8]}, open(sys.argv[9],"w"), indent=2)' \
-    "$ACCOUNT" "$PARTITION" "$GPUS" "$CPUS" "$MEM" "$WALL" "$QOS" "mage-${RUN_ID}" "$alloc"
+    "$ACCOUNT" "$PARTITION" "$gpus" "$CPUS" "$MEM" "$WALL" "$QOS" "$job_name" "$alloc"
   local -a extra=()
   if [[ -n "$REMOTE_SCRATCH" ]]; then
     extra+=(--scratch "$REMOTE_SCRATCH")
@@ -401,7 +512,7 @@ render_batch() {
   if [[ -n "${LLAMA_COMMIT_REQUEST:-}" ]]; then
     extra+=(--llama-commit "$LLAMA_COMMIT_REQUEST")
   fi
-  mage_python "$MAGE_PY" sbatch --allocation "$alloc" --run-dir "$remote_run" --run-id "$RUN_ID" --launcher "$launcher" "${extra[@]}" >"${RUN_DIR}/serve.sbatch"
+  mage_python "$MAGE_PY" sbatch --allocation "$alloc" --run-dir "$remote_run" --run-id "$run_token" --launcher "$launcher" "${extra[@]}" >"$sbatch_out"
 }
 
 submit_batch() {
@@ -497,7 +608,6 @@ wait_for_host() {
     now="$(date +%s)"
     if (( now - start >= STARTUP_TIMEOUT )); then
       mage_cancel_owned_job "$OWNED_JOB_ID" "$OWNED_JOB_NAME" "$target" || true
-      CLEANED=1
       mage_die "Timed out after ${STARTUP_TIMEOUT}s waiting for job ${OWNED_JOB_ID} (last state: ${state:-unknown}). The owned job was cancelled."
     fi
     echo "Waiting for job ${OWNED_JOB_ID} (${state:-unknown}, $((now - start))s)"
@@ -540,6 +650,9 @@ open_tunnel() {
   [[ -n "$MODEL_SSH" ]] || mage_die "Pass --model-ssh USER@GPU_NODE."
   if [[ -n "$JUMP" && "$MODEL_SSH" != "$JUMP" ]]; then
     jump_args=(-J "$JUMP")
+  fi
+  if [[ "${MAGE_SSH_BATCH:-0}" == "1" ]]; then
+    jump_args+=(-o BatchMode=yes)
   fi
   echo "Forwarding ${bind}:${LOCAL_PORT} to ${MODEL_SSH} 127.0.0.1:${PORT}" >&2
   "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" "${jump_args[@]}" -N \
@@ -646,9 +759,10 @@ docker_gateway() {
 }
 
 prove_container() {
+  local evidence="${EVIDENCE_DIR:-$RUN_DIR}"
   local url="http://host.docker.internal:${LOCAL_PORT}/v1"
   echo "Checking that a container can reach ${url}" >&2
-  if docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:8.5.0 -sf "${url}/models" >"${RUN_DIR}/container-models.json" 2>/dev/null; then
+  if docker run --rm --add-host=host.docker.internal:host-gateway curlimages/curl:8.5.0 -sf "${url}/models" >"${evidence}/container-models.json" 2>/dev/null; then
     printf '%s' "$url"
     return 0
   fi
@@ -658,26 +772,27 @@ prove_container() {
   echo "Forwarding on the Docker bridge ${gateway} as well." >&2
   open_tunnel "$gateway" || mage_die "Could not bind the SSH forward on ${gateway}:${LOCAL_PORT}."
   url="http://${gateway}:${LOCAL_PORT}/v1"
-  docker run --rm curlimages/curl:8.5.0 -sf "${url}/models" >"${RUN_DIR}/container-models.json" || mage_die "A container could not reach the model at ${url}."
+  docker run --rm curlimages/curl:8.5.0 -sf "${url}/models" >"${evidence}/container-models.json" || mage_die "A container could not reach the model at ${url}."
   printf '%s' "$url"
 }
 
 gate_model() {
   local base="$1"
-  mkdir -p "${RUN_DIR}/load"
-  if ! mage_verify_endpoint "$base" "${RUN_DIR}/load"; then
+  local evidence="${EVIDENCE_DIR:-$RUN_DIR}"
+  mkdir -p "${evidence}/load"
+  if ! mage_verify_endpoint "$base" "${evidence}/load"; then
     echo "The server at ${base} does not match ${MODEL_ALIAS} with context ${CONTEXT}." >&2
-    [[ -f "${RUN_DIR}/load/load-verdict.json" ]] && cat "${RUN_DIR}/load/load-verdict.json" >&2
+    [[ -f "${evidence}/load/load-verdict.json" ]] && cat "${evidence}/load/load-verdict.json" >&2
     exit 1
   fi
   echo "Loaded model matches ${MODEL_ALIAS} at context ${CONTEXT}."
   if [[ "$SKIP_CHAT_SMOKE" -eq 1 ]]; then
     echo "Chat smoke skipped. Load verification is not a correctness result."
   else
-    if mage_smoke_chat "$base" "${RUN_DIR}/smoke-chat"; then
+    if mage_smoke_chat "$base" "${evidence}/smoke-chat"; then
       echo "Chat smoke passed."
     else
-      echo "Chat smoke failed. See ${RUN_DIR}/smoke-chat/verdict.json" >&2
+      echo "Chat smoke failed. See ${evidence}/smoke-chat/verdict.json" >&2
       if [[ "$ALLOW_SMOKE_FAILURE" -ne 1 ]]; then
         exit 1
       fi
@@ -687,10 +802,10 @@ gate_model() {
   if [[ "$SKIP_TOOL_SMOKE" -eq 1 ]]; then
     echo "Tool smoke skipped. A chat reply does not prove OpenCode tool use."
   else
-    if mage_smoke_tool "$base" "${RUN_DIR}/smoke-tool"; then
+    if mage_smoke_tool "$base" "${evidence}/smoke-tool"; then
       echo "Tool smoke passed."
     else
-      echo "Tool smoke failed. The tool argument was not executed. See ${RUN_DIR}/smoke-tool." >&2
+      echo "Tool smoke failed. The tool argument was not executed. See ${evidence}/smoke-tool." >&2
       if [[ "$ALLOW_SMOKE_FAILURE" -ne 1 ]]; then
         exit 1
       fi
@@ -702,23 +817,39 @@ gate_model() {
 run_condition() {
   local name="$1"
   local base_url="$2"
-  local finger="${RUN_DIR}/fingerprint-${name}.json"
+  local shard="${3:-}"
+  local names_file="${4:-}"
+  local task_count="$N_TASKS"
+  local -a task_names=()
+  local task
+  if [[ -n "$names_file" ]]; then
+    while IFS= read -r task; do
+      [[ -n "$task" ]] || continue
+      task_names+=("$task")
+    done <"$names_file"
+    task_count="${#task_names[@]}"
+  elif [[ "${#TASK_IDS[@]}" -gt 0 ]]; then
+    task_names=("${TASK_IDS[@]}")
+  fi
+  local finger="${RUN_DIR}/fingerprint-${name}${shard:+-s${shard}}.json"
   local -a finger_args=(
     fingerprint --resolved "$RESOLVED" --dataset "$DATASET"
-    --dataset-identity "${DATASET_IDENTITY}" --n-tasks "$N_TASKS"
+    --dataset-identity "${DATASET_IDENTITY}" --n-tasks "$task_count"
     --condition "$name" --llama-commit "${LLAMA_COMMIT:-unspecified}"
   )
-  local task
-  if [[ "${#TASK_IDS[@]}" -gt 0 ]]; then
-    for task in "${TASK_IDS[@]}"; do
+  if [[ ${#task_names[@]} -gt 0 ]]; then
+    for task in "${task_names[@]}"; do
       finger_args+=(--task-id "$task")
     done
   fi
   mage_python "$MAGE_PY" "${finger_args[@]}" >"$finger"
   local job config_line
   job="$(mage_json_get "$finger" job_name)"
+  if [[ -n "$shard" ]]; then
+    job="${job}-s${shard}"
+  fi
   config_line="$(mage_python "$MAGE_PY" opencode --resolved "$RESOLVED" --base-url "$base_url" | mage_python -c 'import json,sys; print(json.dumps(json.load(sys.stdin),separators=(",",":")))')"
-  printf '%s\n' "$config_line" >"${RUN_DIR}/opencode-${name}.json"
+  printf '%s\n' "$config_line" >"${RUN_DIR}/opencode-${name}${shard:+-s${shard}}.json"
   local -a extra=()
   if [[ "$name" == "mage" ]]; then
     [[ -d "$SKILLS" ]] || mage_die "Missing skills directory: ${SKILLS}"
@@ -731,9 +862,9 @@ run_condition() {
   if grep -q -- '--jobs-dir' <<< "$help"; then
     jobs_dir=(--jobs-dir "${RUN_DIR}/harbor-jobs")
   fi
-  if [[ "${#TASK_IDS[@]}" -gt 0 ]]; then
+  if [[ ${#task_names[@]} -gt 0 ]]; then
     if grep -q -- 'include-task' <<< "$help"; then
-      for task in "${TASK_IDS[@]}"; do
+      for task in "${task_names[@]}"; do
         task_args+=(--include-task-name "$task")
       done
     else
@@ -742,12 +873,12 @@ run_condition() {
   fi
   echo
   echo "Harbor job ${job}"
-  echo "agent=opencode model=scholar/${MODEL_ALIAS} tasks=${N_TASKS} condition=${name}"
-  harbor run \
+  echo "agent=opencode model=scholar/${MODEL_ALIAS} tasks=${task_count} condition=${name}"
+  "${REPO_ROOT}/scripts/harbor-run" run \
     --dataset "$DATASET" \
     --agent opencode \
     --model "scholar/${MODEL_ALIAS}" \
-    --n-tasks "$N_TASKS" \
+    --n-tasks "$task_count" \
     --n-concurrent 1 \
     --job-name "$job" \
     --ae "OPENAI_BASE_URL=${base_url}" \
@@ -756,6 +887,458 @@ run_condition() {
     "${jobs_dir[@]}" \
     "${task_args[@]}" \
     "${extra[@]}"
+}
+
+mage_login_host() {
+  local jump="$1"
+  if [[ "$jump" == *@* ]]; then
+    printf '%s' "${jump#*@}"
+  else
+    printf '%s' "$jump"
+  fi
+}
+
+mage_ssh_user_list() {
+  local raw="$1"
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  if [[ ${#raw} -ge 2 ]]; then
+    local quote="${raw:0:1}"
+    if [[ "$quote" == '"' || "$quote" == "'" ]]; then
+      if [[ "$raw" == "${quote}"*"${quote}" ]]; then
+        raw="${raw:1:${#raw}-2}"
+      fi
+    fi
+  fi
+  local -a parts=()
+  read -r -a parts <<< "$raw"
+  SSH_USER_LIST=()
+  [[ ${#parts[@]} -gt 0 ]] || mage_die "SSH user list is empty."
+  local name seen
+  for name in "${parts[@]}"; do
+    [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || mage_die "Refusing SSH user ${name}."
+    if [[ ${#SSH_USER_LIST[@]} -gt 0 ]]; then
+      for seen in "${SSH_USER_LIST[@]}"; do
+        [[ "$seen" != "$name" ]] || mage_die "SSH user ${name} is listed more than once."
+      done
+    fi
+    SSH_USER_LIST+=("$name")
+  done
+}
+
+mage_load_ssh_users() {
+  if [[ -n "${SSH_USERS_ARG:-}" ]]; then
+    mage_ssh_user_list "$SSH_USERS_ARG"
+    return 0
+  fi
+  local file="${MAGE_SSH_USERS_FILE:-${REPO_ROOT}/.env}"
+  [[ -f "$file" ]] || mage_die "No SSH user list. Pass --ssh-users or set MAGE_SSH_USERS in ${file}."
+  local raw
+  raw="$(mage_python - "$file" <<'PY'
+import sys
+from pathlib import Path
+found = ""
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    body = line.split("#", 1)[0].strip()
+    if not body or "=" not in body:
+        continue
+    key, value = body.split("=", 1)
+    if key.strip() == "MAGE_SSH_USERS":
+        found = value.strip()
+if len(found) >= 2 and found[0] == found[-1] and found[0] in {'"', "'"}:
+    found = found[1:-1]
+sys.stdout.write(found)
+PY
+)"
+  mage_ssh_user_list "$raw"
+}
+
+mage_probe_ssh_users() {
+  local host="$1"
+  local need="$2"
+  shift 2
+  PROBED_USERS=()
+  local name
+  for name in "$@"; do
+    if [[ ${#PROBED_USERS[@]} -ge "$need" ]]; then
+      break
+    fi
+    if "${MAGE_SSH:-ssh}" "${SSH_BASE[@]}" -o BatchMode=yes "${name}@${host}" true; then
+      PROBED_USERS+=("$name")
+    else
+      echo "Warning: SSH login failed for ${name}@${host}. Skipping this account." >&2
+    fi
+  done
+  if [[ ${#PROBED_USERS[@]} -eq 0 ]]; then
+    mage_die "No Scholar account accepted SSH. Refusing to submit."
+  fi
+}
+
+mage_write_fleet_plan() {
+  local dest="$1"
+  local gpus="$2"
+  shift 2
+  local -a args=()
+  local user
+  for user in "$@"; do
+    args+=(--user "$user")
+  done
+  mage_python "$MAGE_PY" fleet-plan --gpus "$gpus" "${args[@]}" >"$dest"
+}
+
+mage_print_fleet_warnings() {
+  local file="$1"
+  mage_python -c 'import json,sys
+plan=json.load(open(sys.argv[1],encoding="utf-8"))
+for warning in plan.get("warnings") or []:
+    print(warning)' "$file" >&2
+}
+
+mage_read_fleet_slots() {
+  local file="$1"
+  FLEET_PLAN_INDEXES=()
+  FLEET_PLAN_USERS=()
+  local index user
+  while IFS=$'\t' read -r index user; do
+    [[ -n "${index:-}" ]] || continue
+    FLEET_PLAN_INDEXES+=("$index")
+    FLEET_PLAN_USERS+=("$user")
+  done < <(mage_python -c 'import json,sys
+plan=json.load(open(sys.argv[1],encoding="utf-8"))
+for slot in plan["slots"]:
+    print("{}\t{}".format(slot["index"], slot["user"]))' "$file")
+}
+
+mage_condition_csv() {
+  case "$CONDITION" in
+    both) printf '%s' "baseline,mage" ;;
+    *) printf '%s' "$CONDITION" ;;
+  esac
+}
+
+print_fleet_dry_run() {
+  local host need name
+  host="$(mage_login_host "$JUMP")"
+  mage_load_ssh_users
+  need=$(( (USE_GPUS + 1) / 2 ))
+  local -a chosen=()
+  for name in "${SSH_USER_LIST[@]}"; do
+    [[ ${#chosen[@]} -ge "$need" ]] && break
+    chosen+=("$name")
+  done
+  echo "Login host: ${host}"
+  echo "SSH users: ${SSH_USER_LIST[*]}"
+  echo "Fleet accounts (unprobed): ${chosen[*]}"
+  echo "A real run probes SSH and skips accounts that do not log in."
+  if [[ "$JUMP" == *@* ]]; then
+    echo "Warning: --jump supplies the login host. Accounts come from the SSH user list." >&2
+  fi
+  local plan="${RUN_DIR}/fleet-plan.json"
+  mage_write_fleet_plan "$plan" "$USE_GPUS" "${chosen[@]}"
+  mage_print_fleet_warnings "$plan"
+  mage_read_fleet_slots "$plan"
+  local i index user slot_id remote port
+  for i in "${!FLEET_PLAN_INDEXES[@]}"; do
+    index="${FLEET_PLAN_INDEXES[$i]}"
+    user="${FLEET_PLAN_USERS[$i]}"
+    slot_id="${RUN_ID}-s${index}"
+    remote="/remote/mage-eval-jobs/${slot_id}"
+    port=$((LOCAL_PORT + index))
+    echo "Fleet slot ${index}: user=${user} gpus=1 local_port=${port}"
+    render_batch "$remote" "${remote}/scholar-session" \
+      "${RUN_DIR}/slot-${index}.sbatch" "mage-${slot_id}" 1 "$slot_id" \
+      "${RUN_DIR}/slot-${index}-allocation.json"
+    echo "Batch script slot ${index}:"
+    cat "${RUN_DIR}/slot-${index}.sbatch"
+  done
+  local names="${RUN_DIR}/fleet-task-placeholders.txt"
+  local shards="${RUN_DIR}/fleet-shard-counts.json"
+  mage_python -c 'import sys
+total=int(sys.argv[1])
+sys.stdout.write("".join(f"task-{i}\n" for i in range(total)))' "$N_TASKS" >"$names"
+  mage_python "$MAGE_PY" shard-tasks --shards "${#FLEET_PLAN_INDEXES[@]}" --names-file "$names" >"$shards"
+  mage_python -c 'import json,sys
+groups=json.load(open(sys.argv[1],encoding="utf-8"))
+for condition in sys.argv[2].split(","):
+    if not condition:
+        continue
+    for index, group in enumerate(groups):
+        print(f"Harbor shard {condition} slot {index}: {len(group)} task(s)")' \
+    "$shards" "$(mage_condition_csv)"
+}
+
+write_fleet_state() {
+  local tsv="${RUN_DIR}/fleet.tsv"
+  : >"$tsv"
+  local i
+  for i in "${!FLEET_JOB_IDS[@]}"; do
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "${FLEET_USERS[$i]}" "${FLEET_JUMPS[$i]}" "${FLEET_JOB_IDS[$i]}" \
+      "${FLEET_JOB_NAMES[$i]}" "${FLEET_REMOTE_RUNS[$i]}" "${FLEET_MODEL_SSH[$i]:-}" \
+      "${FLEET_PORTS[$i]}" >>"$tsv"
+  done
+  mkdir -p "$STATE_DIR"
+  mage_python - "$tsv" "$RUN_ID" "$MODEL_ALIAS" "$CONTEXT" \
+    "${STATE_DIR}/current.json" "${RUN_DIR}/state.json" <<'PY'
+import json, sys
+from pathlib import Path
+rows = []
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    user, jump, job_id, job_name, remote_run, model_ssh, port = line.split("\t")
+    rows.append({
+        "user": user,
+        "jump": jump,
+        "job_id": job_id,
+        "job_name": job_name,
+        "remote_run": remote_run,
+        "model_ssh": model_ssh,
+        "local_port": int(port),
+        "owned": True,
+    })
+first = rows[0]
+host = first["model_ssh"].split("@", 1)[-1] if "@" in first["model_ssh"] else ""
+payload = {
+    "run_id": sys.argv[2],
+    "job_id": first["job_id"],
+    "job_name": first["job_name"],
+    "jump": first["jump"],
+    "remote_run": first["remote_run"],
+    "model_alias": sys.argv[3],
+    "context": int(sys.argv[4]),
+    "owned": True,
+    "hostname": host,
+    "jobs": rows,
+}
+text = json.dumps(payload, indent=2) + "\n"
+Path(sys.argv[5]).write_text(text, encoding="utf-8")
+Path(sys.argv[6]).write_text(text, encoding="utf-8")
+PY
+}
+
+write_fleet_files() {
+  local i
+  {
+    echo "model_ssh=${FLEET_MODEL_SSH[0]}"
+    echo "jump=${FLEET_JUMPS[0]}"
+    echo "local_port=${FLEET_PORTS[0]}"
+    echo "remote_port=${PORT}"
+  } >"${RUN_DIR}/tunnel.txt"
+  local tsv="${RUN_DIR}/fleet-urls.tsv"
+  : >"$tsv"
+  for i in "${!FLEET_JOB_IDS[@]}"; do
+    printf '%s\t%s\n' "$i" "${FLEET_URLS[$i]}" >>"$tsv"
+  done
+  mage_python - "$tsv" "${RUN_DIR}/state.json" "${RUN_DIR}/fleet.json" "$PORT" <<'PY'
+import json, sys
+from pathlib import Path
+state = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+urls = {}
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    index, url = line.split("\t", 1)
+    urls[int(index)] = url
+slots = []
+for index, job in enumerate(state["jobs"]):
+    slots.append({
+        "user": job["user"],
+        "jump": job["jump"],
+        "job_id": job["job_id"],
+        "job_name": job["job_name"],
+        "model_ssh": job["model_ssh"],
+        "local_port": str(job["local_port"]),
+        "remote_port": sys.argv[4],
+        "container_url": urls.get(index, ""),
+    })
+Path(sys.argv[3]).write_text(json.dumps({"slots": slots}, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+queue_fleet_slot() {
+  local index="$1"
+  local user="$2"
+  local host="$3"
+  local saved_jump="$JUMP"
+  local saved_gpus="$GPUS"
+  JUMP="${user}@${host}"
+  GPUS=1
+  local slot_id="${RUN_ID}-s${index}"
+  local job_name="mage-${slot_id}"
+  local port=$((LOCAL_PORT + index))
+  local home remote_run launcher job_id
+  home="$(remote_home "$JUMP")"
+  [[ "$home" =~ ^/[A-Za-z0-9_./@+-]+$ ]] || mage_die "Refusing remote HOME ${home:-empty} for ${user}."
+  remote_run="${home}/mage-eval-jobs/${slot_id}"
+  launcher="${remote_run}/scholar-session"
+  render_batch "$remote_run" "$launcher" \
+    "${RUN_DIR}/slot-${index}.sbatch" "$job_name" 1 "$slot_id" \
+    "${RUN_DIR}/slot-${index}-allocation.json"
+  echo "Fleet slot ${index}: user=${user} gpus=1 local_port=${port}"
+  echo "Batch script slot ${index}:"
+  cat "${RUN_DIR}/slot-${index}.sbatch"
+  upload_launcher "$JUMP" "$remote_run"
+  scp_to "${RUN_DIR}/slot-${index}.sbatch" "$JUMP" "${remote_run}/serve.sbatch"
+  job_id="$(ssh_to "$JUMP" "sbatch --parsable $(printf '%q' "${remote_run}/serve.sbatch")")"
+  job_id="${job_id%%;*}"
+  job_id="${job_id//$'\r'/}"
+  [[ "$job_id" =~ ^[0-9]+$ ]] || mage_die "sbatch did not return a numeric job id for ${user}: ${job_id:-empty}"
+  FLEET_USERS+=("$user")
+  FLEET_JUMPS+=("$JUMP")
+  FLEET_PORTS+=("$port")
+  FLEET_JOB_IDS+=("$job_id")
+  FLEET_JOB_NAMES+=("$job_name")
+  FLEET_REMOTE_RUNS+=("$remote_run")
+  FLEET_MODEL_SSH+=("")
+  OWNED_JOB_ID="$job_id"
+  OWNED_JOB_NAME="$job_name"
+  write_fleet_state
+  echo "Submitted owned SLURM job ${job_id} (${job_name}) for ${user}."
+  JUMP="$saved_jump"
+  GPUS="$saved_gpus"
+}
+
+wait_fleet_slots() {
+  local i saved_jump="$JUMP" saved_model="$MODEL_SSH"
+  for i in "${!FLEET_JOB_IDS[@]}"; do
+    JUMP="${FLEET_JUMPS[$i]}"
+    OWNED_JOB_ID="${FLEET_JOB_IDS[$i]}"
+    OWNED_JOB_NAME="${FLEET_JOB_NAMES[$i]}"
+    MODEL_SSH="${FLEET_USERS[$i]}@pending"
+    wait_for_host ssh "${FLEET_REMOTE_RUNS[$i]}"
+    FLEET_MODEL_SSH[$i]="$MODEL_SSH"
+  done
+  JUMP="$saved_jump"
+  MODEL_SSH="$saved_model"
+  write_fleet_state
+}
+
+open_fleet_tunnels() {
+  local i saved_port="$LOCAL_PORT" saved_model="$MODEL_SSH" saved_jump="$JUMP" url
+  FLEET_URLS=()
+  echo "Fleet servers: ${#FLEET_JOB_IDS[@]}"
+  for i in "${!FLEET_JOB_IDS[@]}"; do
+    LOCAL_PORT="${FLEET_PORTS[$i]}"
+    MODEL_SSH="${FLEET_MODEL_SSH[$i]}"
+    JUMP="${FLEET_JUMPS[$i]}"
+    OWNED_JOB_ID="${FLEET_JOB_IDS[$i]}"
+    OWNED_JOB_NAME="${FLEET_JOB_NAMES[$i]}"
+    EVIDENCE_DIR="${RUN_DIR}/slot-${i}"
+    mkdir -p "$EVIDENCE_DIR"
+    open_tunnel "127.0.0.1" || mage_die "SSH forward exited before the model responded on port ${PORT} for ${FLEET_USERS[$i]}."
+    gate_model "http://127.0.0.1:${LOCAL_PORT}"
+    url="$(prove_container)"
+    FLEET_URLS+=("$url")
+    echo "Container base URL: ${url}"
+  done
+  LOCAL_PORT="$saved_port"
+  MODEL_SSH="$saved_model"
+  JUMP="$saved_jump"
+  EVIDENCE_DIR="$RUN_DIR"
+  write_fleet_files
+}
+
+run_fleet_harbor() {
+  local names="${RUN_DIR}/task-names.txt"
+  if [[ ${#TASK_IDS[@]} -gt 0 ]]; then
+    printf '%s\n' "${TASK_IDS[@]}" >"$names"
+  else
+    mage_python "$MAGE_PY" list-tasks --dataset "$DATASET" --n-tasks "$N_TASKS" >"$names"
+  fi
+  local shard_json="${RUN_DIR}/shards.json"
+  local slots="${#FLEET_URLS[@]}"
+  mage_python "$MAGE_PY" shard-tasks --shards "$slots" --names-file "$names" >"$shard_json"
+  local -a conditions=()
+  if [[ "$CONDITION" == "baseline" || "$CONDITION" == "both" ]]; then
+    conditions+=(baseline)
+  fi
+  if [[ "$CONDITION" == "mage" || "$CONDITION" == "both" ]]; then
+    conditions+=(mage)
+  fi
+  local condition i shard_file shard_arg pid failed
+  for condition in "${conditions[@]}"; do
+    local -a pids=()
+    for i in "${!FLEET_URLS[@]}"; do
+      shard_file="${RUN_DIR}/shard-${condition}-${i}.txt"
+      mage_python -c 'import json,sys
+groups=json.load(open(sys.argv[1],encoding="utf-8"))
+for name in groups[int(sys.argv[2])]:
+    print(name)' "$shard_json" "$i" >"$shard_file"
+      if [[ ! -s "$shard_file" ]]; then
+        echo "Warning: slot ${i} (${FLEET_USERS[$i]}) has no tasks for ${condition}." >&2
+        continue
+      fi
+      shard_arg=""
+      if [[ "$slots" -gt 1 ]]; then
+        shard_arg="$i"
+      fi
+      run_condition "$condition" "${FLEET_URLS[$i]}" "$shard_arg" "$shard_file" &
+      pids+=("$!")
+    done
+    failed=0
+    if [[ ${#pids[@]} -gt 0 ]]; then
+      for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+          failed=1
+        fi
+      done
+    fi
+    [[ "$failed" -eq 0 ]] || mage_die "A Harbor shard failed for ${condition}."
+  done
+}
+
+release_fleet_jobs() {
+  local index
+  [[ "$KEEP_ALLOCATION" -eq 0 && ${#FLEET_JOB_IDS[@]} -gt 0 ]] || return 0
+  for index in "${!FLEET_JOB_IDS[@]}"; do
+    mage_cancel_owned_job "${FLEET_JOB_IDS[$index]}" "${FLEET_JOB_NAMES[$index]}" "${FLEET_JUMPS[$index]}" || true
+  done
+  CLEANED=1
+}
+
+run_fleet_live() {
+  local host need
+  allocation_warnings
+  host="$(mage_login_host "$JUMP")"
+  [[ -n "$host" ]] || mage_die "Fleet submission needs a login host in --jump."
+  if [[ "$JUMP" == *@* ]]; then
+    echo "Warning: --jump supplies the login host. Accounts come from the SSH user list." >&2
+  fi
+  mage_load_ssh_users
+  need=$(( (USE_GPUS + 1) / 2 ))
+  echo "Probing Scholar accounts for ${USE_GPUS} GPUs (${need} accounts, 2 GPUs each)."
+  echo "Login host: ${host}"
+  mage_probe_ssh_users "$host" "$need" "${SSH_USER_LIST[@]}"
+  local plan="${RUN_DIR}/fleet-plan.json"
+  mage_write_fleet_plan "$plan" "$USE_GPUS" "${PROBED_USERS[@]}"
+  mage_print_fleet_warnings "$plan"
+  mage_read_fleet_slots "$plan"
+  MAGE_SSH_BATCH=1
+  local i
+  for i in "${!FLEET_PLAN_INDEXES[@]}"; do
+    queue_fleet_slot "${FLEET_PLAN_INDEXES[$i]}" "${FLEET_PLAN_USERS[$i]}" "$host"
+  done
+  wait_fleet_slots
+  open_fleet_tunnels
+  if [[ "$SETUP_ONLY" -eq 1 ]]; then
+    echo "Setup complete. Interrupt this process to close the tunnels."
+    if [[ ${#TUNNEL_PIDS[@]} -gt 0 ]]; then
+      wait "${TUNNEL_PIDS[@]}"
+    fi
+    return 0
+  fi
+  ensure_harbor
+  probe_dataset
+  echo "Agent base URL: ${FLEET_URLS[0]}"
+  run_fleet_harbor
+  if [[ -d "${RUN_DIR}/harbor-jobs" ]]; then
+    mage_python "$MAGE_PY" summarize-harbor --root "${RUN_DIR}/harbor-jobs" >"${RUN_DIR}/summary.json"
+  else
+    printf '%s\n' '{"note":"Harbor did not write a jobs directory in this run folder. A single task is not an aggregate SWE-bench Pro score."}' >"${RUN_DIR}/summary.json"
+  fi
+  echo "Run artifacts: ${RUN_DIR}"
+  release_fleet_jobs
 }
 
 cmd_run() {
@@ -769,7 +1352,7 @@ cmd_run() {
   if [[ -n "${LLAMA_COMMIT_REQUEST:-}" ]]; then
     LLAMA_COMMIT="$LLAMA_COMMIT_REQUEST"
   fi
-  if [[ "$MODE" == "batch" ]]; then
+  if [[ "$MODE" == "batch" && -z "$USE_GPUS" ]]; then
     allocation_warnings
     local via
     via="$(submit_via)"
@@ -781,9 +1364,13 @@ cmd_run() {
     fi
     echo "Batch script:"
     cat "${RUN_DIR}/serve.sbatch"
+  elif [[ "$MODE" == "batch" && -n "$USE_GPUS" && "$DRY_RUN" -eq 1 ]]; then
+    allocation_warnings
+    print_fleet_dry_run
   fi
   if [[ "$DRY_RUN" -eq 1 ]]; then
     local name preview
+    if [[ -z "$USE_GPUS" ]]; then
     for name in baseline mage; do
       if [[ "$CONDITION" != "both" && "$CONDITION" != "$name" ]]; then
         continue
@@ -803,6 +1390,7 @@ cmd_run() {
       mage_python "$MAGE_PY" "${preview_args[@]}" >"$preview"
       echo "Harbor job (${name}): $(mage_json_get "$preview" job_name)"
     done
+    fi
     echo "Dataset release is unverified until a live run probes Harbor. V1, V2, and HARD-51 scores stay separate."
     echo "Dry run: no sbatch, ssh, docker, model download, or Harbor job was started."
     return 0
@@ -811,6 +1399,11 @@ cmd_run() {
   command -v curl >/dev/null 2>&1 || mage_die "curl is required."
   command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || mage_die "python3 is required."
   require_docker
+  if [[ -n "$USE_GPUS" ]]; then
+    command -v ssh >/dev/null 2>&1 || mage_die "ssh is required."
+    run_fleet_live
+    return 0
+  fi
   local base
   if [[ "$MODE" == "url" ]]; then
     base="${MODEL_URL%/}"
