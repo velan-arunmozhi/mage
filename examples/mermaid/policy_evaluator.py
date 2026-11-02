@@ -1,5 +1,21 @@
 """Policy evaluator - aligned predicate."""
 
+from node_anchor import AnchorError, build_alias_index
+
+
+def _alias_index(model):
+    """Alias map for this model, empty when the overlay is malformed.
+
+    ``is_aligned`` is called on overlays assembled outside
+    ``model_loader.load_model`` (``function_checker`` builds one), so an
+    ambiguous alias must not raise here. An empty index degrades to
+    exact-ID matching, which is the pre-alias behavior.
+    """
+    try:
+        return build_alias_index(model)
+    except AnchorError:
+        return {}
+
 
 def _resolve_layer(comp_id, components, _seen=None):
     """Resolve a component's effective layer, walking "parent" when the
@@ -72,10 +88,16 @@ def is_aligned(observed_edge: dict, model: dict) -> tuple:
     elif cell == "forbidden":
         return ("forbidden", "forbidden_by_policy", {"cell": cell})
     elif cell == "permitted":
-        # Check if sanctioned in relations
+        # Check if sanctioned in relations. A relation may name either
+        # endpoint by a declared alias, so a sanctioned edge authored before
+        # a rename keeps matching the renamed component instead of silently
+        # becoming undeclared.
+        aliases = _alias_index(model)
         sanctioned = False
         for rel in model.get("relations", []):
-            if rel["from"] == from_id and rel["to"] == to_id and rel["type"] == rel_type:
+            rel_from = aliases.get(rel["from"], rel["from"])
+            rel_to = aliases.get(rel["to"], rel["to"])
+            if rel_from == from_id and rel_to == to_id and rel["type"] == rel_type:
                 sanctioned = True
                 break
         if sanctioned:

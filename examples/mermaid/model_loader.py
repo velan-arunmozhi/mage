@@ -2,6 +2,10 @@ from pathlib import Path
 import json
 import hashlib
 
+from node_anchor import AnchorError, anchor_issues, build_alias_index, resolve_id
+
+FINE_GRAINED_KINDS = ("function", "class")
+
 
 class ModelValidationError(Exception):
     pass
@@ -31,6 +35,14 @@ def load_model(model_path):
                 raise ModelValidationError()
         elif not item.get("parent"):
             raise ModelValidationError()
+        # A function or class node must carry the shared anchor. File and
+        # module components predate it and are left alone, so every model
+        # written before function-level extraction still loads unchanged.
+        if item.get("kind") in FINE_GRAINED_KINDS:
+            if "anchor" not in item:
+                raise ModelValidationError()
+            if anchor_issues(item["anchor"]):
+                raise ModelValidationError()
         comp_ids.append(item["id"])
     if len(comp_ids) != len(set(comp_ids)):
         raise ModelValidationError()
@@ -63,13 +75,19 @@ def load_model(model_path):
     if len(ext_ids) != len(set(ext_ids)):
         raise ModelValidationError()
     all_ids = set(comp_ids) | set(ext_ids)
+    # Aliases let a relation keep resolving after a rename. build_alias_index
+    # rejects an ambiguous one rather than picking a side.
+    try:
+        alias_index = build_alias_index(data)
+    except AnchorError:
+        raise ModelValidationError()
     relations = data.get("relations", [])
     for item in relations:
         if item.get("type") not in relation_types:
             raise ModelValidationError()
-        if item.get("from") not in all_ids:
+        if resolve_id(item.get("from"), all_ids, alias_index) is None:
             raise ModelValidationError()
-        if item.get("to") not in all_ids:
+        if resolve_id(item.get("to"), all_ids, alias_index) is None:
             raise ModelValidationError()
     matrix = policy.get("matrix", {})
     for rel_type, layer_map in matrix.items():
@@ -92,6 +110,12 @@ def load_model(model_path):
 
 def canonicalize_model(model):
     m = json.loads(json.dumps(model))
+    # Alias order is not meaningful, so sort it before hashing; otherwise two
+    # models declaring the same renames in a different order would produce
+    # different canonical hashes and read as drift.
+    for item in list(m.get("components", [])) + list(m.get("external_systems", [])):
+        if isinstance(item.get("aliases"), list):
+            item["aliases"] = sorted(item["aliases"])
     if "components" in m:
         m["components"].sort(key=lambda c: c["id"])
     if "external_systems" in m:

@@ -24,8 +24,11 @@ the fake objects in ``test_scip_loader.py``), so the conversion logic is
 fully unit-testable without that dependency installed, and without any
 network access or an installed indexer.
 """
+import hashlib
 import re
 from typing import Dict, List, Optional
+
+from node_anchor import make_anchor
 
 
 # SCIP symbol_roles is a bitflag; role 0x1 marks a Definition occurrence.
@@ -142,6 +145,62 @@ def _range_contains(outer, inner) -> bool:
     return o_start <= i_start <= o_end
 
 
+def _scip_anchor(relative_path: str, occ, source_hash: Optional[str]) -> dict:
+    """The shared node contract for a SCIP definition occurrence.
+
+    SCIP ranges are 0-based; the ast-based extractor records 1-based lines,
+    so convert here rather than leaving two line conventions in one model.
+
+    ``source_hash`` is None when the caller did not supply ``source_by_path``.
+    ``make_anchor`` then marks the anchor incomplete and names the missing
+    field, which is the same posture ``_is_confirmed_call_site`` already
+    takes toward a call it cannot confirm without source text.
+    """
+    range_ = list(getattr(occ, "range", []))
+    lineno = end_lineno = col_offset = None
+    if range_:
+        start_line, end_line = _line_span(range_)
+        lineno = start_line + 1
+        end_lineno = end_line + 1
+        col_offset = range_[1] if len(range_) > 1 else None
+    return make_anchor(
+        path=relative_path,
+        symbol=occ.symbol,
+        sha256=source_hash,
+        lineno=lineno,
+        end_lineno=end_lineno,
+        col_offset=col_offset,
+    )
+
+
+def _scip_anchor(relative_path: str, occ, source_hash: Optional[str]) -> dict:
+    """The shared node contract for a SCIP definition occurrence.
+
+    SCIP ranges are 0-based; the ast-based extractor records 1-based lines,
+    so convert here rather than leaving two line conventions in one model.
+
+    ``source_hash`` is None when the caller did not supply ``source_by_path``.
+    ``make_anchor`` then marks the anchor incomplete and names the missing
+    field, which is the same posture ``_is_confirmed_call_site`` already
+    takes toward a call it cannot confirm without source text.
+    """
+    range_ = list(getattr(occ, "range", []))
+    lineno = end_lineno = col_offset = None
+    if range_:
+        start_line, end_line = _line_span(range_)
+        lineno = start_line + 1
+        end_lineno = end_line + 1
+        col_offset = range_[1] if len(range_) > 1 else None
+    return make_anchor(
+        path=relative_path,
+        symbol=occ.symbol,
+        sha256=source_hash,
+        lineno=lineno,
+        end_lineno=end_lineno,
+        col_offset=col_offset,
+    )
+
+
 def _symbol_to_id(file_component_id: str, symbol: str) -> str:
     # SCIP symbols are globally unique and already encode package/descriptor
     # path; just make them filesystem/identifier-friendly and namespace them
@@ -199,8 +258,13 @@ def convert_index(index, file_component_by_relative_path: Dict[str, dict],
     calls_edges, unresolved_references).
     """
     source_lines_by_path: Dict[str, Optional[List[str]]] = {}
+    source_hash_by_path: Dict[str, str] = {}
     if source_by_path:
         source_lines_by_path = {path: text.splitlines() for path, text in source_by_path.items()}
+        source_hash_by_path = {
+            path: hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for path, text in source_by_path.items()
+        }
     function_components: List[dict] = []
     class_components: List[dict] = []
     contains_edges: List[dict] = []
@@ -229,6 +293,8 @@ def convert_index(index, file_component_by_relative_path: Dict[str, dict],
             comp = {
                 "id": comp_id, "kind": "class", "parent": file_id,
                 "name": _symbol_name(occ.symbol), "path": document.relative_path, "symbol": occ.symbol,
+                "anchor": _scip_anchor(document.relative_path, occ,
+                                       source_hash_by_path.get(document.relative_path)),
             }
             class_components.append(comp)
             class_symbol_to_id[occ.symbol] = comp_id
@@ -251,6 +317,8 @@ def convert_index(index, file_component_by_relative_path: Dict[str, dict],
             comp = {
                 "id": comp_id, "kind": "function", "parent": parent_id,
                 "name": _symbol_name(occ.symbol), "path": document.relative_path, "symbol": occ.symbol,
+                "anchor": _scip_anchor(document.relative_path, occ,
+                                       source_hash_by_path.get(document.relative_path)),
             }
             function_components.append(comp)
             contains_edges.append({
