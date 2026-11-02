@@ -22,11 +22,36 @@ def load_model(model_path):
     for item in components:
         if not item.get("id"):
             raise ModelValidationError()
-        if item["layer"] not in layers:
+        # A component declares its layer directly (every pre-existing model
+        # does this), or it may instead declare a "parent" and inherit the
+        # layer transitively -- this is how function/class components, which
+        # have no layer of their own, attach to the file component that does.
+        if "layer" in item and item["layer"] is not None:
+            if item["layer"] not in layers:
+                raise ModelValidationError()
+        elif not item.get("parent"):
             raise ModelValidationError()
         comp_ids.append(item["id"])
     if len(comp_ids) != len(set(comp_ids)):
         raise ModelValidationError()
+    comp_by_id = {item["id"]: item for item in components}
+    for item in components:
+        if "layer" in item and item["layer"] is not None:
+            continue
+        # Walk the parent chain and require it to terminate at a
+        # layer-bearing component, with a cycle guard.
+        seen = set()
+        cursor = item
+        while True:
+            parent_id = cursor.get("parent")
+            if parent_id is None or parent_id not in comp_by_id:
+                raise ModelValidationError()
+            if parent_id in seen:
+                raise ModelValidationError()
+            seen.add(parent_id)
+            cursor = comp_by_id[parent_id]
+            if cursor.get("layer"):
+                break
     ext_systems = data.get("external_systems", [])
     ext_ids = []
     for item in ext_systems:

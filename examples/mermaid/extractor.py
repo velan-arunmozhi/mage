@@ -5,37 +5,34 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 
-def extract(root: Path, model: dict) -> Tuple[List[dict], List[dict], List[dict], List[str]]:
-    """Extract edges, sources, unresolved, unmodeled."""
-    root = root.resolve()
-    components = model.get("components", [])
-    ext_systems = model.get("external_systems", [])
-    
-    by_module = {}
-    for item in components:
-        path = item.get("path")
-        if path:
-            by_module[Path(path).stem] = item  # handle .py extension? compare module name
-    
-    # Better mapping: by module name as in OCL - from component id or path
-    by_module = {}
-    for item in components:
-        # map by filename stem
-        by_module[Path(item["path"]).stem] = item
-        # also try module name if matches
-        mod_name = Path(item["path"]).stem  # simple case
-    
-    edges = []
-    sources = []
-    unresolved = []
-    
-    # Build full mapping
+def build_mod_to_comp(components: List[dict]) -> Dict[str, dict]:
+    """Map an importable module name (and bare filename) to its declared component.
+
+    Factored out so other extractors (e.g. ``function_extractor.py``) resolve
+    ``from <module> import <name>`` the same way this module resolves
+    ``import <module>`` / ``from <module> import ...`` edges, instead of
+    duplicating the matching rule.
+    """
     mod_to_comp = {}
     for item in components:
         mod_to_comp[Path(item["path"]).with_suffix("").name] = item
         # also allow direct match by basename
         mod_to_comp[Path(item["path"]).name] = item
-    
+    return mod_to_comp
+
+
+def extract(root: Path, model: dict) -> Tuple[List[dict], List[dict], List[dict], List[str]]:
+    """Extract edges, sources, unresolved, unmodeled."""
+    root = root.resolve()
+    components = model.get("components", [])
+    ext_systems = model.get("external_systems", [])
+
+    edges = []
+    sources = []
+    unresolved = []
+
+    mod_to_comp = build_mod_to_comp(components)
+
     for item in components:
         source_path = root / item["path"]
         if not source_path.exists():
