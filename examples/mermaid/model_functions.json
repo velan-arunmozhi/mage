@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "repository": "org/repo",
+  "components": [
+    { "id": "extra.worker", "path": "worker.py", "layer": "service", "responsibility": "Worker", "external": false },
+    { "id": "extra.helper", "path": "helper.py", "layer": "service", "responsibility": "Helper", "external": false },
+    { "id": "extra.dynamic", "path": "dynamic.py", "layer": "service", "responsibility": "Dynamic dispatch", "external": false }
+  ],
+  "external_systems": [],
+  "relations": [
+    { "from": "extra.worker", "to": "extra.helper", "type": "IMPORTS", "status": "sanctioned" },
+    { "from": "extra.dynamic", "to": "extra.helper", "type": "IMPORTS", "status": "sanctioned" }
+  ],
+  "policy": {
+    "layers": ["api", "service", "database"],
+    "relation_types": ["IMPORTS", "CONTAINS", "CALLS", "READS", "WRITES"],
+    "matrix": {
+      "IMPORTS": {
+        "service": { "service": "permitted" }
+      },
+      "CALLS": {
+        "service": { "service": "permitted" }
+      }
+    }
+  },
+  "constraints": [],
+  "function_rules": [
+    {
+      "id": "FR1",
+      "pattern": "^extra\\.helper\\.format_result$",
+      "min_params": 1,
+      "max_params": 1,
+      "return_type": "str"
+    },
+    {
+      "id": "FR2",
+      "pattern": "^extra\\.worker\\.Worker\\.process$",
+      "must_call_pattern": "^extra\\.helper\\."
+    },
+    {
+      "id": "FR3",
+      "pattern": "^extra\\.dynamic\\.dispatch$",
+      "return_type": "str"
+    }
+  ]
+}

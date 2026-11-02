@@ -1,6 +1,29 @@
 """Policy evaluator - aligned predicate."""
 
 
+def _resolve_layer(comp_id, components, _seen=None):
+    """Resolve a component's effective layer, walking "parent" when the
+    component has none of its own (e.g. a function/class component that
+    inherits its layer from the file/module that contains it).
+
+    Returns None, rather than raising, when the chain is missing or cyclic;
+    callers already treat a missing layer as "unresolved", not an error --
+    this keeps that behavior for malformed overlays built outside
+    ``model_loader.load_model`` (which otherwise guarantees termination).
+    """
+    _seen = _seen or set()
+    comp = components.get(comp_id)
+    if comp is None or comp_id in _seen:
+        return None
+    layer = comp.get("layer")
+    if layer:
+        return layer
+    parent_id = comp.get("parent")
+    if not parent_id:
+        return None
+    return _resolve_layer(parent_id, components, _seen | {comp_id})
+
+
 def is_aligned(observed_edge: dict, model: dict) -> tuple:
     """
     Determine alignment of observed edge.
@@ -18,12 +41,12 @@ def is_aligned(observed_edge: dict, model: dict) -> tuple:
         # An edge we cannot attribute to a declared component is an inspection gap, not a verdict.
         return ("unresolved", "unknown_source", {"from": from_id})
     from_comp = components[from_id]
-    from_layer = from_comp.get("layer")
+    from_layer = _resolve_layer(from_id, components)
     
     to_comp = components.get(to_id)
     to_layer = None
     if to_comp:
-        to_layer = to_comp.get("layer")
+        to_layer = _resolve_layer(to_id, components)
     elif to_id in ext_systems:
         ext = ext_systems[to_id]
         to_layer = ext.get("layer")
