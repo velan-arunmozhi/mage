@@ -153,7 +153,9 @@ class TestModelLoaderParentInheritance(unittest.TestCase):
             "schema_version": 1,
             "components": [
                 {"id": "orders.api", "path": "api.py", "layer": "api"},
-                {"id": "orders.api.handler", "kind": "function", "parent": "orders.api"},
+                {"id": "orders.api.handler", "kind": "function", "parent": "orders.api",
+                 "anchor": {"path": "api.py", "symbol": "handler", "sha256": "0" * 64,
+                            "lineno": 1, "status": "complete"}},
             ],
             "external_systems": [],
             "relations": [],

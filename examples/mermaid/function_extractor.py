@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from extractor import build_mod_to_comp
+from node_anchor import make_anchor
 
 
 def _annotation_to_str(node):
@@ -75,66 +76,110 @@ class _DefinitionCollector(ast.NodeVisitor):
         self.toplevel_funcs: Dict[str, str] = {}  # name -> function_id (module scope only)
         self.toplevel_classes: Dict[str, str] = {}  # name -> class_id (module scope only)
         self.methods_by_class: Dict[str, Dict[str, str]] = {}  # class_id -> {name: function_id}
+        self.duplicate_ids: List[dict] = []
         self._stack = [(file_id, 0)]  # (parent_component_id, depth); depth 0 == module scope
+        self._qual_stack: List[str] = []  # names only, for the anchor symbol
 
     def _anchor(self, node):
         return {"path": self.path, "line": node.lineno, "sha256": self.source_hash}
 
+    def _node_anchor(self, node, name):
+        """The shared node contract, with the symbol qualified within its file.
+
+        ``symbol`` is the dotted path from module scope, so it stays readable
+        and stays stable under a file rename -- the file component's ``path``
+        already carries where the file lives.
+        """
+        return make_anchor(
+            path=self.path,
+            symbol=".".join(self._qual_stack + [name]),
+            sha256=self.source_hash,
+            lineno=node.lineno,
+            end_lineno=getattr(node, "end_lineno", None),
+            col_offset=getattr(node, "col_offset", None),
+        )
+
+    def _claim_id(self, component_id, node, name):
+        """Record a collision instead of letting the later definition win.
+
+        ``f"{parent_id}.{name}"`` is not unique: a ``@property`` and its
+        setter, or two definitions under different branches of an ``if``,
+        produce the same ID. Silently overwriting the first would drop a real
+        definition and attach its evidence to the wrong body.
+        """
+        if component_id in self.classes or component_id in self.functions:
+            self.duplicate_ids.append({
+                "id": component_id,
+                "path": self.path,
+                "line": node.lineno,
+                "name": name,
+            })
+            return False
+        return True
+
     def visit_ClassDef(self, node: ast.ClassDef):
         parent_id, depth = self._stack[-1]
         class_id = f"{parent_id}.{node.name}"
-        self.classes[class_id] = {
-            "id": class_id,
-            "kind": "class",
-            "parent": parent_id,
-            "name": node.name,
-            "path": self.path,
-            "lineno": node.lineno,
-        }
-        self.contains_edges.append({
-            "from": parent_id,
-            "to": class_id,
-            "type": "CONTAINS",
-            "claim_status": "observed",
-            "evidence": self._anchor(node),
-        })
-        if depth == 0:
-            self.toplevel_classes[node.name] = class_id
-        self.methods_by_class.setdefault(class_id, {})
+        if self._claim_id(class_id, node, node.name):
+            self.classes[class_id] = {
+                "id": class_id,
+                "kind": "class",
+                "parent": parent_id,
+                "name": node.name,
+                "path": self.path,
+                "lineno": node.lineno,
+                "anchor": self._node_anchor(node, node.name),
+            }
+            self.contains_edges.append({
+                "from": parent_id,
+                "to": class_id,
+                "type": "CONTAINS",
+                "claim_status": "observed",
+                "evidence": self._anchor(node),
+            })
+            if depth == 0:
+                self.toplevel_classes[node.name] = class_id
+            self.methods_by_class.setdefault(class_id, {})
         self._stack.append((class_id, depth + 1))
+        self._qual_stack.append(node.name)
         for child in node.body:
             self.visit(child)
+        self._qual_stack.pop()
         self._stack.pop()
 
     def _visit_function(self, node):
         parent_id, depth = self._stack[-1]
         fn_id = f"{parent_id}.{node.name}"
         is_method = parent_id in self.classes
-        self.functions[fn_id] = {
-            "id": fn_id,
-            "kind": "function",
-            "parent": parent_id,
-            "name": node.name,
-            "path": self.path,
-            "lineno": node.lineno,
-            "params": _params_of(node),
-            "returns": _annotation_to_str(node.returns),
-            "is_method": is_method,
-        }
-        self.contains_edges.append({
-            "from": parent_id,
-            "to": fn_id,
-            "type": "CONTAINS",
-            "claim_status": "observed",
-            "evidence": self._anchor(node),
-        })
-        if depth == 0:
-            self.toplevel_funcs[node.name] = fn_id
-        if is_method:
-            self.methods_by_class[parent_id][node.name] = fn_id
+        if self._claim_id(fn_id, node, node.name):
+            self.functions[fn_id] = {
+                "id": fn_id,
+                "kind": "function",
+                "parent": parent_id,
+                "name": node.name,
+                "path": self.path,
+                "lineno": node.lineno,
+                "params": _params_of(node),
+                "returns": _annotation_to_str(node.returns),
+                "is_method": is_method,
+                "anchor": self._node_anchor(node, node.name),
+            }
+            self.contains_edges.append({
+                "from": parent_id,
+                "to": fn_id,
+                "type": "CONTAINS",
+                "claim_status": "observed",
+                "evidence": self._anchor(node),
+            })
+            if depth == 0:
+                self.toplevel_funcs[node.name] = fn_id
+            if is_method:
+                self.methods_by_class[parent_id][node.name] = fn_id
         self._stack.append((fn_id, depth + 1))
+        self._qual_stack.append(node.name)
         for child in node.body:
             self.visit(child)
+        self._qual_stack.pop()
         self._stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
@@ -280,6 +325,25 @@ def extract_functions(root: Path, model: dict) -> Tuple[List[dict], List[dict], 
 
     Returns (function_components, class_components, contains_edges,
     calls_edges, unresolved_calls).
+
+    Kept at this arity because five call sites unpack it positionally. Use
+    ``extract_structure`` when you also need the colliding IDs it reports.
+    """
+    result = extract_structure(root, model)
+    return (result["functions"], result["classes"], result["contains_edges"],
+            result["calls_edges"], result["unresolved_calls"])
+
+
+def extract_structure(root: Path, model: dict) -> dict:
+    """Extract function-level structure, including collision reporting.
+
+    Every function and class component carries an ``anchor`` built by
+    ``node_anchor.make_anchor``, so a node extracted here and a node loaded
+    from a SCIP index can be verified the same way.
+
+    ``duplicate_ids`` lists definitions whose generated ID was already taken.
+    They are dropped rather than overwriting the earlier definition, and
+    reported so the caller can treat the coverage gap as a gap.
     """
     root = root.resolve()
     components = model.get("components", [])
@@ -321,15 +385,25 @@ def extract_functions(root: Path, model: dict) -> Tuple[List[dict], List[dict], 
     function_components: List[dict] = []
     class_components: List[dict] = []
     contains_edges: List[dict] = []
+    duplicate_ids: List[dict] = []
     for file_id, collector in defs_by_file.items():
         class_components.extend(collector.classes.values())
         function_components.extend(collector.functions.values())
         contains_edges.extend(collector.contains_edges)
+        duplicate_ids.extend(collector.duplicate_ids)
 
     function_components.sort(key=lambda c: c["id"])
     class_components.sort(key=lambda c: c["id"])
     contains_edges.sort(key=lambda e: (e["from"], e["evidence"]["line"], e["to"]))
     all_calls.sort(key=lambda e: (e["from"], e["evidence"]["line"], e["to"]))
     all_unresolved.sort(key=lambda e: (e["from"], e["evidence"]["line"]))
+    duplicate_ids.sort(key=lambda d: (d["path"], d["line"], d["id"]))
 
-    return function_components, class_components, contains_edges, all_calls, all_unresolved
+    return {
+        "functions": function_components,
+        "classes": class_components,
+        "contains_edges": contains_edges,
+        "calls_edges": all_calls,
+        "unresolved_calls": all_unresolved,
+        "duplicate_ids": duplicate_ids,
+    }
