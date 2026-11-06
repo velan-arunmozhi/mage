@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Install pinned Node 22 and opencode-ai under ~/.cache/mage-opencode.
+# Re-running is a no-op once VERSION matches the pin.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m scripts.harbor.cache_layout "$@"

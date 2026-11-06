@@ -1,0 +1,27 @@
+{
+  "updated": "2026-10-25T22:50:00Z",
+  "allocation": "spark-batch 4h GPU job gb10-inf-bench",
+  "in_automatic_script": [
+    "probe",
+    "llama-bench Qwen3.5-2B and Qwen3.6 short, 32k, depth",
+    "llama-batched-bench concurrency 1-16 at 1k and 8k prompts",
+    "llama-server sustained chat profiles A and B",
+    "vLLM Qwen3.6 NVFP4 smoke, MTP off sweep, MTP 1/2/3"
+  ],
+  "queued_after_checkpoint_1": [
+    "Qwen3.6 NVFP4 profile C and D and near-128k filled context",
+    "Qwen3.6 sustained 120s at the throughput-optimal concurrency",
+    "Ornith-1.5-35B-A3B-NVFP4 same profiles",
+    "LFM2.5-24B-A2B",
+    "Nemotron 3.5 Lightning NVFP4",
+    "Mellum 2.1",
+    "GPT-OSS-20B",
+    "Qwen3.5-4B / cached Qwen3-4B and Qwen3.5-9B reference",
+    "coding quality suite on finalists",
+    "SGLang only if a finalist is within 20% and the image is obtainable"
+  ],
+  "excluded_until_justified": [
+    "Qwen3.8-Flash-Next until a quantized checkpoint is shown to fit with 128k KV headroom",
+    "Qwen3.7 local weights unless an official downloadable checkpoint is found"
+  ]
+}

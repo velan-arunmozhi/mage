@@ -1,0 +1,30 @@
+  3/3 Mean: 0.000 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0:16:57 0:00:00
+
+swebenchpro • opencode • gpt-oss-20b
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┓
+┃ Trials ┃ Exceptions ┃  Mean ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━┩
+│      2 │          1 │ 0.000 │
+└────────┴────────────┴───────┘
+
+┏━━━━━━━━┳━━━━━━━┓
+┃ Reward ┃ Count ┃
+┡━━━━━━━━╇━━━━━━━┩
+│ 0.0    │     2 │
+└────────┴───────┘
+
+┏━━━━━━━━━━━━━━┳━━━━━━━┓
+┃ Exception    ┃ Count ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━┩
+│ RuntimeError │     1 │
+└──────────────┴───────┘
+
+Job Info
+Total runtime: 16m 57s
+Results written to 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-gpt-r9/result.json
+Inspect results by running `harbor view 
+/home/aj/mage/gb10-inference-bench/harbor-jobs`
+Share results by running `harbor upload 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-gpt-r9`
+

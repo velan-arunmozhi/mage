@@ -1,0 +1,31 @@
+  10/10 Mean: 0.400 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1:18:07 0:00:00
+
+swebenchpro • opencode • nvidia/Qwen3.6-35B-A3B-NVFP4
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┓
+┃ Trials ┃ Exceptions ┃  Mean ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━┩
+│     10 │          2 │ 0.400 │
+└────────┴────────────┴───────┘
+
+┏━━━━━━━━┳━━━━━━━┓
+┃ Reward ┃ Count ┃
+┡━━━━━━━━╇━━━━━━━┩
+│ 0.0    │     6 │
+│ 1.0    │     4 │
+└────────┴───────┘
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
+┃ Exception                 ┃ Count ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩
+│ NonZeroAgentExitCodeError │     2 │
+└───────────────────────────┴───────┘
+
+Job Info
+Total runtime: 1h 18m 6s
+Results written to 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-qwen-off-rest/result.json
+Inspect results by running `harbor view 
+/home/aj/mage/gb10-inference-bench/harbor-jobs`
+Share results by running `harbor upload 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-qwen-off-rest`
+

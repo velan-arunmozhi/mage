@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# One model server per manifest cell, then Harbor baseline and mage.
+# Dry-run prints the eval-host and harbor commands and does not allocate.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONUNBUFFERED=1
+exec python3 -m scripts.eval_grid "$@"

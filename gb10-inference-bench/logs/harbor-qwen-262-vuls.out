@@ -1,0 +1,24 @@
+  1/1 Mean: 0.000 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0:20:33 0:00:00
+
+swebenchpro • opencode • nvidia/Qwen3.6-35B-A3B-NVFP4
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┓
+┃ Trials ┃ Exceptions ┃  Mean ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━┩
+│      1 │          0 │ 0.000 │
+└────────┴────────────┴───────┘
+
+┏━━━━━━━━┳━━━━━━━┓
+┃ Reward ┃ Count ┃
+┡━━━━━━━━╇━━━━━━━┩
+│ 0.0    │     1 │
+└────────┴───────┘
+
+Job Info
+Total runtime: 20m 33s
+Results written to 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-qwen-262-vuls/result.json
+Inspect results by running `harbor view 
+/home/aj/mage/gb10-inference-bench/harbor-jobs`
+Share results by running `harbor upload 
+/home/aj/mage/gb10-inference-bench/harbor-jobs/harbor-qwen-262-vuls`
+

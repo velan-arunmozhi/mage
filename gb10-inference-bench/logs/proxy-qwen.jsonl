@@ -1,0 +1,3 @@
+{"mode": "qwen-off", "usage": {"prompt_tokens": 19, "total_tokens": 21, "completion_tokens": 2, "prompt_tokens_details": null, "completion_tokens_details": {"reasoning_tokens": 0}}, "status": 200}
+{"mode": "qwen-off", "usage": {"prompt_tokens": 17, "total_tokens": 19, "completion_tokens": 2, "prompt_tokens_details": null, "completion_tokens_details": {"reasoning_tokens": 0}}, "status": 200}
+{"mode": "qwen-off", "usage": {"prompt_tokens": 277, "total_tokens": 303, "completion_tokens": 26, "prompt_tokens_details": null, "completion_tokens_details": {"reasoning_tokens": 0}}, "status": 200}

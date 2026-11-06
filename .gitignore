@@ -1,2 +1,5 @@
 .venv/
 __pycache__/
+
+# Harbor writes trial logs, trajectories, and agent state here by default.
+jobs/
